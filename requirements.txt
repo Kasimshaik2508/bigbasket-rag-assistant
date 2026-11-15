@@ -2,7 +2,7 @@
 # that Streamlit Community Cloud can't use; the CPU build is much smaller.
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch
-streamlit>=1.36
+streamlit>=1.40
 pandas
 numpy
 chromadb
