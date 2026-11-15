@@ -9,11 +9,11 @@ So:
     across re-runs instead of reloading it every click.
   - st.session_state keeps the chat history across re-runs.
 
-Look & feel:
-  - Theme colours (BigBasket green) live in .streamlit/config.toml
-  - The small CSS block below styles the header banner, suggestion cards and
-    source cards. Streamlit has no built-in "card" widget, so a little HTML/CSS
-    is the standard way to get a polished look.
+Design idea: a grocery shopping list + shelf price tags.
+  - Theme colours live in .streamlit/config.toml
+  - The CSS below adds the fonts, the shopping-list suggestions and the
+    price-tag source cards (Streamlit has no built-in widget for these, so a
+    small HTML/CSS layer is the standard approach).
 """
 
 import html
@@ -23,65 +23,102 @@ import streamlit as st
 
 from rag import FALLBACK_MSG, RAGPipeline, SIM_THRESHOLD, TOP_K
 
-st.set_page_config(page_title="BigBasket Product Assistant", page_icon="🛒",
-                   layout="centered")
+st.set_page_config(page_title="BigBasket Assistant", page_icon="🧺", layout="centered")
 
-GREEN = "#689F38"
-LIGHT = "#F3F8EC"
+# Design tokens — one place to change the look
+LEAF, HALDI, INK, MINT, CHILLI = "#2F5D2A", "#E2A31B", "#1E2A1B", "#EEF4E8", "#B4462B"
 
-# ---------------------------------------------------------------------------
-# CSS — kept in one place so it's easy to tweak
-# ---------------------------------------------------------------------------
 st.markdown(f"""
 <style>
-/* hide Streamlit's developer chrome (Deploy button, menu, footer) */
+@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Instrument+Sans:wght@400;500;600&display=swap');
+
+/* body font everywhere text lives (not on icon elements, which use their own font) */
+.stApp, .stMarkdown, .stMarkdown p, .stMarkdown li, button, input, textarea, label {{
+  font-family: 'Instrument Sans', system-ui, sans-serif;
+}}
+h1, h2, h3, .display {{ font-family: 'Bricolage Grotesque', system-ui, sans-serif; }}
+
+/* hide Streamlit's developer chrome */
 .stDeployButton, #MainMenu, footer {{ display: none !important; }}
 header[data-testid="stHeader"] {{ background: transparent; }}
-.block-container {{ padding-top: 2rem; padding-bottom: 6rem; max-width: 820px; }}
+.block-container {{ padding-top: 3rem; padding-bottom: 7rem; max-width: 760px; }}
 
-/* header banner */
-.hero {{
-  background: linear-gradient(120deg, #84C225 0%, #4E7D2A 100%);
-  border-radius: 18px; padding: 26px 30px; color: white; margin-bottom: 18px;
-  box-shadow: 0 6px 20px rgba(78,125,42,.25);
-}}
-.hero h1 {{ color: white; font-size: 1.9rem; margin: 0 0 6px 0; padding: 0; }}
-.hero p  {{ margin: 0; opacity: .92; font-size: .98rem; }}
-.pills {{ margin-top: 14px; display: flex; gap: 8px; flex-wrap: wrap; }}
-.pill {{ background: rgba(255,255,255,.18); border: 1px solid rgba(255,255,255,.35);
-        padding: 4px 12px; border-radius: 999px; font-size: .8rem; }}
+/* ---------- top of page ---------- */
+.brand {{ display: flex; align-items: center; gap: 10px; color: {LEAF};
+         font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 1.05rem; }}
+.brand .mark {{ width: 34px; height: 34px; border-radius: 10px; background: {LEAF}; color: white;
+               display: grid; place-items: center; font-size: 1.1rem; }}
+.ask {{ font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; color: {INK};
+       font-size: clamp(2.2rem, 6vw, 3.4rem); line-height: 1.02; letter-spacing: -0.03em;
+       margin: 28px 0 12px; }}
+.lede {{ color: #4d5a48; font-size: 1.05rem; max-width: 34em; margin-bottom: 26px; }}
 
-/* welcome text above suggestion buttons */
-.welcome {{ color: #4a5a40; font-size: 1.05rem; font-weight: 600; margin: 8px 0 10px; }}
-
-/* suggestion buttons in the main area look like cards */
+/* ---------- suggestions as a shopping list ---------- */
+.list-head {{ color: #6b7766; font-size: .9rem; margin: 6px 0 2px; }}
 div[data-testid="stMainBlockContainer"] .stButton > button {{
-  background: white; border: 1px solid #DDE8CF; border-radius: 14px;
-  padding: 14px 16px; min-height: 78px; text-align: left; color: #2d3a24;
-  justify-content: flex-start; transition: all .15s ease;
+  width: 100%; background: transparent; border: none; border-bottom: 1.5px dashed #CFDCC5;
+  border-radius: 0; padding: 14px 4px 14px 40px; justify-content: flex-start; color: {INK};
+  position: relative; box-shadow: none;
+}}
+div[data-testid="stMainBlockContainer"] .stButton > button::before {{
+  content: ""; position: absolute; left: 6px; top: 50%; width: 20px; height: 20px;
+  transform: translateY(-50%); border: 2px solid {LEAF}; border-radius: 50%;
+}}
+div[data-testid="stMainBlockContainer"] .stButton > button:hover {{ background: {MINT}; color: {LEAF}; }}
+div[data-testid="stMainBlockContainer"] .stButton > button:hover::before {{ background: {LEAF};
+  box-shadow: inset 0 0 0 3px white; }}
+div[data-testid="stMainBlockContainer"] .stButton > button:focus-visible {{
+  outline: 2px solid {LEAF}; outline-offset: 2px; }}
+div[data-testid="stMainBlockContainer"] .stButton > button > div,
+div[data-testid="stMainBlockContainer"] .stButton > button [data-testid="stMarkdownContainer"] {{
+  justify-content: flex-start !important; text-align: left !important; width: 100%;
 }}
 div[data-testid="stMainBlockContainer"] .stButton > button p,
 div[data-testid="stMainBlockContainer"] .stButton > button .stMarkdownEllipsis {{
-  white-space: normal !important; overflow: visible !important;
-  text-overflow: clip !important; text-align: left; line-height: 1.35;
+  white-space: normal !important; overflow: visible !important; text-overflow: clip !important;
+  text-align: left; font-size: 1.02rem; line-height: 1.35;
 }}
-div[data-testid="stMainBlockContainer"] .stButton > button:hover {{
-  border-color: {GREEN}; background: {LIGHT}; transform: translateY(-1px);
+.hint {{ color: #8a9585; font-size: .82rem; margin-left: 40px; margin-top: -6px; }}
+
+/* ---------- chat ---------- */
+[data-testid="stChatMessage"] {{ background: transparent; padding: 6px 0; }}
+[data-testid="stChatMessageContent"] p {{ font-size: 1.02rem; line-height: 1.6; }}
+[data-testid="stChatInput"] {{ border: 2px solid {LEAF}; border-radius: 16px; }}
+
+/* "not in our data" reply */
+.nodata {{ border-left: 4px solid {CHILLI}; background: #FBF1EE; padding: 12px 16px;
+          border-radius: 4px 12px 12px 4px; color: #5a2a1d; }}
+.nodata b {{ color: {CHILLI}; }}
+
+/* ---------- sources as shelf price tags (the signature element) ---------- */
+.tags {{ display: flex; flex-wrap: wrap; gap: 14px 12px; padding: 6px 2px 4px; }}
+.tag {{
+  position: relative; flex: 1 1 210px; max-width: 100%; background: white;
+  border: 1.5px solid #D8E3CF; border-radius: 6px 18px 18px 6px;
+  padding: 12px 14px 12px 34px;
 }}
+.tag::before {{  /* the punched hole */
+  content: ""; position: absolute; left: 11px; top: 16px; width: 10px; height: 10px;
+  border-radius: 50%; background: {MINT}; border: 1.5px solid #B9CBAA;
+}}
+.tag .n {{ position: absolute; left: 10px; top: 34px; font-size: .72rem; color: #8a9585; }}
+.tag .name {{ font-weight: 600; color: {INK}; font-size: .92rem; line-height: 1.3; }}
+.tag .brand-l {{ color: #66715f; font-size: .8rem; margin-top: 2px; }}
+.tag .row {{ display: flex; align-items: baseline; justify-content: space-between; margin-top: 8px; }}
+.tag .price {{ font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 1.25rem;
+              color: {INK}; background: {HALDI}; padding: 0 8px; border-radius: 6px; }}
+.tag .match {{ font-size: .75rem; color: {LEAF}; }}
+.tag details {{ margin-top: 8px; font-size: .82rem; color: #4d5a48; }}
+.tag summary {{ cursor: pointer; color: {LEAF}; }}
 
-/* source cards inside the "Retrieved context" expander */
-.src {{ border: 1px solid #E3ECD8; border-left: 4px solid {GREEN}; border-radius: 10px;
-       padding: 10px 14px; margin-bottom: 10px; background: #FBFDF8; }}
-.src-title {{ font-weight: 700; color: #26331d; }}
-.src-meta {{ font-size: .8rem; color: #667060; margin: 2px 0 6px; }}
-.badge {{ display: inline-block; background: {LIGHT}; color: #3e6b1f; border-radius: 6px;
-         padding: 1px 8px; font-size: .75rem; font-weight: 600; margin-right: 6px; }}
-.src-desc {{ font-size: .85rem; color: #3b4634; }}
+/* ---------- sidebar ---------- */
+section[data-testid="stSidebar"] {{ background: {MINT}; }}
+section[data-testid="stSidebar"] h3 {{ font-family: 'Bricolage Grotesque', sans-serif; color: {LEAF}; }}
+.key-ok  {{ color: {LEAF}; font-size: .85rem; }}
+.key-bad {{ color: {CHILLI}; font-size: .85rem; }}
+.facts {{ font-size: .85rem; color: #4d5a48; line-height: 1.7; }}
 
-/* sidebar */
-section[data-testid="stSidebar"] {{ background: {LIGHT}; }}
-.key-ok  {{ color: #3e6b1f; font-size: .85rem; }}
-.key-bad {{ color: #b45309; font-size: .85rem; }}
+@media (prefers-reduced-motion: reduce) {{ * {{ transition: none !important; }} }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -89,13 +126,13 @@ section[data-testid="stSidebar"] {{ background: {LIGHT}; }}
 # ---------------------------------------------------------------------------
 # Load the pipeline ONCE per server process.
 # ---------------------------------------------------------------------------
-@st.cache_resource(show_spinner="Loading products and building the search index...")
+@st.cache_resource(show_spinner="Getting the product catalogue ready (first start takes a minute or two)...")
 def load_pipeline():
     return RAGPipeline()
 
 
 def get_api_key():
-    """Key priority: sidebar input > .streamlit/secrets.toml > env variable."""
+    """Key priority: sidebar input > Streamlit secrets > env variable."""
     typed = st.session_state.get("api_key_input", "")
     if typed:
         return typed
@@ -113,124 +150,134 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 
 # ---------------------------------------------------------------------------
-# SIDEBAR — settings only (kept short so the demo looks clean)
+# SIDEBAR — settings and the facts evaluators ask about
 # ---------------------------------------------------------------------------
 with st.sidebar:
-    st.markdown("### 🛒 BigBasket Assistant")
-    st.text_input("Gemini API key", type="password", key="api_key_input",
-                  placeholder="Paste your key here",
-                  help="Free key from aistudio.google.com, or set GEMINI_API_KEY in .streamlit/secrets.toml")
+    st.markdown("### Settings")
+    has_secret_key = False
+    try:
+        has_secret_key = bool(st.secrets.get("GEMINI_API_KEY"))
+    except Exception:
+        pass
+    if not has_secret_key:   # hosted app with a secret: no need to show the box
+        st.text_input("Gemini API key", type="password", key="api_key_input",
+                      placeholder="Paste your key",
+                      help="Free key from aistudio.google.com")
     if get_api_key():
-        st.markdown('<div class="key-ok">● API key connected</div>', unsafe_allow_html=True)
+        st.markdown('<div class="key-ok">● Connected to Gemini</div>', unsafe_allow_html=True)
     else:
-        st.markdown('<div class="key-bad">● No API key yet</div>', unsafe_allow_html=True)
+        st.markdown('<div class="key-bad">● Add a Gemini key to start chatting</div>',
+                    unsafe_allow_html=True)
 
     st.divider()
-    # Letting evaluators switch modes live SHOWS why hybrid retrieval helps
-    # (try a brand name in 'vector' vs 'hybrid').
-    mode = st.radio("Retrieval mode", ["hybrid", "vector", "keyword"],
-                    horizontal=True,
-                    help="hybrid = semantic vectors + BM25 keywords, merged with Reciprocal Rank Fusion")
-    top_k = st.slider("Chunks to retrieve (k)", 2, 10, TOP_K)
-    show_ctx = st.toggle("Show retrieved sources", value=True)
+    # Switching modes live SHOWS why hybrid helps (try a brand name in each).
+    mode = st.radio("Search method", ["hybrid", "vector", "keyword"], horizontal=True,
+                    help="hybrid = meaning-based (vector) + exact-word (BM25) search, merged with Reciprocal Rank Fusion")
+    top_k = st.slider("Products to look at per question", 2, 10, TOP_K)
+    show_ctx = st.toggle("Show the products used", value=True)
 
     st.divider()
-    if st.button("🗑️  New chat", use_container_width=True):
-        st.session_state.messages = []
-        st.rerun()
+    st.markdown(f"""<div class="facts">
+{n_products:,} products, {n_chunks:,} searchable chunks<br>
+Source: Kaggle BigBasket catalogue (2022 snapshot)<br>
+Prices are from the dataset, not live
+</div>""", unsafe_allow_html=True)
 
     with st.expander("How it works"):
         st.markdown(
             "**Data → Chunking → Embeddings → Vector store → Retrieval → LLM → Answer**\n\n"
-            "1. Kaggle BigBasket catalogue, cleaned (empty/duplicate rows removed)\n"
+            "1. Kaggle BigBasket catalogue, cleaned (empty and duplicate rows removed)\n"
             "2. One document per product; long descriptions split (800 chars, 100 overlap), "
-            "product header repeated on every chunk\n"
+            "product details repeated on every chunk\n"
             "3. `all-MiniLM-L6-v2` embeddings\n"
             "4. Stored in ChromaDB (cosine)\n"
-            "5. Hybrid retrieval: vector + BM25, fused with RRF\n"
-            "6. Gemini answers only from retrieved chunks, with [n] citations\n"
-            f"7. Fallback if best similarity < {SIM_THRESHOLD}"
+            "5. Hybrid retrieval: vector + BM25, merged with RRF\n"
+            "6. Gemini answers only from retrieved products, citing them as [1], [2]\n"
+            f"7. If the best match is below {SIM_THRESHOLD:.0%} similarity, it says the data doesn't cover it"
         )
 
-# ---------------------------------------------------------------------------
-# HEADER BANNER
-# ---------------------------------------------------------------------------
-st.markdown(f"""
-<div class="hero">
-  <h1>🛒 BigBasket Product Assistant</h1>
-  <p>Find groceries, compare brands and check prices — every answer is grounded in the BigBasket catalogue.</p>
-  <div class="pills">
-    <span class="pill">📦 {n_products:,} products</span>
-    <span class="pill">🧩 {n_chunks:,} chunks</span>
-    <span class="pill">🔎 {mode.capitalize()} retrieval</span>
-    <span class="pill">🕒 Catalogue snapshot, not live stock</span>
-  </div>
-</div>
-""", unsafe_allow_html=True)
-
-
-def render_sources(chunks, best_sim):
-    """Show what the retriever fed the LLM, as readable cards.
-    WHY: the brief asks you to check that retrieved chunks contain the evidence;
-    this makes that visible live in the demo."""
-    with st.expander(f"📚 Sources used · {len(chunks)} chunks · best match {best_sim:.0%}"):
-        for n, c in enumerate(chunks, 1):
-            m = c["metadata"]
-            desc = c["text"].split("Description:", 1)[-1].strip()
-            desc = html.escape(desc[:260] + ("…" if len(desc) > 260 else ""))
-            price = f"₹{m['price']:,.0f}" if m.get("price", -1) >= 0 else ""
-            sim = (f"{c['similarity']:.0%} match" if c["similarity"] is not None
-                   else "keyword match")
-            st.markdown(f"""
-<div class="src">
-  <div class="src-title">[{n}] {html.escape(m['product'])}</div>
-  <div class="src-meta">
-    <span class="badge">{html.escape(m['brand'])}</span>
-    <span class="badge">{html.escape(m['category'])}</span>
-    {f'<span class="badge">{price}</span>' if price else ''}
-    <span>{sim}</span>
-  </div>
-  <div class="src-desc">{desc}</div>
-</div>""", unsafe_allow_html=True)
+    if st.session_state.messages and st.button("Start a new list", use_container_width=True):
+        st.session_state.messages = []
+        st.rerun()
 
 
 # ---------------------------------------------------------------------------
-# WELCOME SCREEN — suggestion cards when the chat is empty
+# Rendering helpers
 # ---------------------------------------------------------------------------
+def render_tags(chunks, best_sim):
+    """Retrieved products as shelf price tags.
+    WHY show them: the brief asks you to check that retrieved chunks contain the
+    evidence; this makes retrieval visible during the demo."""
+    tags = []
+    for n, c in enumerate(chunks, 1):
+        m = c["metadata"]
+        desc = c["text"].split("Description:", 1)[-1].strip()
+        price = f"₹{m['price']:,.0f}" if m.get("price", -1) >= 0 else "Policy"
+        match = (f"{c['similarity']:.0%} match" if c["similarity"] is not None
+                 else "word match")
+        tags.append(f"""
+<div class="tag">
+  <span class="n">{n}</span>
+  <div class="name">{html.escape(m['product'])}</div>
+  <div class="brand-l">{html.escape(m['brand'])}, {html.escape(m['category'])}</div>
+  <div class="row"><span class="price">{price}</span><span class="match">{match}</span></div>
+  <details><summary>Description</summary>{html.escape(desc[:420])}{'…' if len(desc) > 420 else ''}</details>
+</div>""")
+    with st.expander(f"Products used for this answer ({len(chunks)}), closest match {best_sim:.0%}"):
+        st.markdown(f'<div class="tags">{"".join(tags)}</div>', unsafe_allow_html=True)
+
+
+def render_nodata():
+    st.markdown(f'<div class="nodata"><b>Not in the catalogue.</b> {html.escape(FALLBACK_MSG)}</div>',
+                unsafe_allow_html=True)
+
+
+AVATARS = {"user": "🙂", "assistant": "🧺"}
+
+# ---------------------------------------------------------------------------
+# TOP OF PAGE: big question on an empty chat, small brand line after
+# ---------------------------------------------------------------------------
+st.markdown('<div class="brand"><span class="mark">🧺</span>BigBasket Assistant</div>',
+            unsafe_allow_html=True)
+
 SUGGESTIONS = [
-    ("🥣", "Suggest a healthy breakfast cereal under ₹300"),
-    ("⚖️", "Compare Tata Sampann and Fortune toor dal"),
-    ("🧴", "Which face wash is good for oily skin and what does it cost?"),
-    ("🚚", "What is BigBasket's delivery time in Gurgaon?"),   # fallback test
+    ("Suggest a healthy breakfast cereal under ₹300", None),
+    ("Compare Tata Sampann and Fortune toor dal", None),
+    ("Which face wash suits oily skin, and what does it cost?", None),
+    ("What is BigBasket's delivery time in Gurgaon?",
+     "Not in the catalogue, so the assistant should say it doesn't know"),
 ]
 
 if not st.session_state.messages:
-    st.markdown('<div class="welcome">What can I help you find today?</div>',
-                unsafe_allow_html=True)
-    cols = st.columns(2)
-    for i, (icon, q) in enumerate(SUGGESTIONS):
-        if cols[i % 2].button(f"{icon}  {q}", key=f"sugg{i}", use_container_width=True):
+    st.markdown('<div class="ask">What’s on your list today?</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="lede">Ask about groceries, brands, prices or ingredients. '
+        'Answers come only from the BigBasket product catalogue, with the products shown '
+        'so you can check them.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="list-head">Try one of these</div>', unsafe_allow_html=True)
+    for i, (q, hint) in enumerate(SUGGESTIONS):
+        if st.button(q, key=f"sugg{i}", use_container_width=True):
             st.session_state.pending_question = q
             st.rerun()
+        if hint:
+            st.markdown(f'<div class="hint">{hint}</div>', unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
 # CHAT HISTORY (Streamlit forgets the screen on each re-run, so redraw it)
 # ---------------------------------------------------------------------------
-AVATARS = {"user": "🧑", "assistant": "🛒"}
-
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"], avatar=AVATARS[msg["role"]]):
         if msg.get("fallback"):
-            st.info(msg["content"], icon="🤔")
+            render_nodata()
         else:
             st.markdown(msg["content"])
         if msg["role"] == "assistant" and show_ctx and msg.get("chunks"):
-            render_sources(msg["chunks"], msg["best_sim"])
+            render_tags(msg["chunks"], msg["best_sim"])
 
 # ---------------------------------------------------------------------------
-# NEW QUESTION: typed, or from a suggestion card
+# NEW QUESTION: typed, or from the shopping list
 # ---------------------------------------------------------------------------
-question = st.chat_input("Ask about any BigBasket product, brand or price...")
+question = st.chat_input("Ask about a product, brand or price")
 if not question:
     question = st.session_state.pop("pending_question", None)
 
@@ -242,26 +289,27 @@ if question:
     with st.chat_message("assistant", avatar=AVATARS["assistant"]):
         api_key = get_api_key()
         if not api_key:
-            st.warning("Add your Gemini API key in the sidebar first.", icon="🔑")
+            st.warning("Add a Gemini API key in the sidebar to get answers.", icon="🔑")
             st.session_state.messages.pop()   # don't keep an unanswered question
             st.stop()
 
-        with st.spinner("Searching the catalogue..."):
+        with st.spinner("Checking the catalogue..."):
             try:
                 result = pipeline.answer(question, api_key, k=top_k, mode=mode)
             except Exception as e:  # e.g. bad API key / no internet
-                st.error(f"Something went wrong: {e}")
+                st.error(f"Couldn't get an answer: {e}. Check the API key and try again.")
                 st.stop()
 
         content = FALLBACK_MSG if result["fallback"] else result["answer"]
         if result["fallback"]:
-            st.info(content, icon="🤔")
+            render_nodata()
         else:
             st.markdown(content)
         if show_ctx:
-            render_sources(result["chunks"], result["best_sim"])
+            render_tags(result["chunks"], result["best_sim"])
 
     st.session_state.messages.append({
         "role": "assistant", "content": content, "fallback": result["fallback"],
         "chunks": result["chunks"], "best_sim": result["best_sim"],
     })
+    st.rerun()   # redraw so the big heading collapses to the brand line
