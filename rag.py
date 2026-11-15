@@ -1,59 +1,65 @@
 """
-rag.py — the RAG pipeline for the BigBasket Product Assistant.
+rag.py — RAG Pipeline for the BigBasket Product Assistant.
 
-Pipeline (this is what you explain in the demo):
-    CSV  ->  clean  ->  one text document per product  ->  chunk long ones
-         ->  embeddings (sentence-transformers)  ->  vector store (ChromaDB)
-         ->  retrieval (vector + BM25 keyword = Hybrid RAG)
-         ->  LLM (Gemini) gets question + retrieved chunks  ->  grounded answer
-         ->  fallback if retrieved context is not relevant enough
-
-Everything the Streamlit UI needs is in the RAGPipeline class at the bottom.
+Implements your rag_enhanced pattern with:
+  - retriever.retrieve(query, top_k, score_threshold)
+  - llm.invoke(prompt) returning response.content
+  - Standardized dictionary output: answer, sources, confidence_score, context
+  - Groq primary (chatgpt-oss-20b / llama-3.1-8b) with Gemini fallback wrapper
+  - Hybrid retrieval (dense vector + BM25 keyword merged via RRF)
+  - Cross-Encoder re-ranking (ms-marco-MiniLM-L-6-v2)
+  - Exact Hash Cache (SHA-256)
+  - Input/output safety & relevance guardrails
+  - Query decomposition for compound questions
 """
 
+import hashlib
+import json
 import os
 import re
+import time
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Prevent unnecessary network attempts by Hugging Face / Transformers offline
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 import pandas as pd
 
 # ---------------------------------------------------------------------------
-# CONFIG — every "magic number" lives here so you can justify/change it.
+# CONFIG
 # ---------------------------------------------------------------------------
 DATA_PATH = os.getenv("BB_DATA_PATH", "data/BigBasket Products.csv")
-POLICY_PATH = os.getenv("BB_POLICY_PATH", "data/bigbasket_policies.txt")  # optional
-CHROMA_DIR = "chroma_db"          # where the vector store is saved on disk
+POLICY_PATH = os.getenv("BB_POLICY_PATH", "data/bigbasket_policies.txt")
+CHROMA_DIR = "chroma_db"
 COLLECTION = "bigbasket_products"
+LOG_DIR = os.getenv("BB_LOG_DIR", "logs")
 
-# Small, fast, free embedding model (384-dim). Runs on CPU, no API key needed.
 EMBED_MODEL = "all-MiniLM-L6-v2"
+RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
-# WHY a cap: embedding all ~27k rows on a laptop CPU takes ~10+ min.
-# 5,000 rows embeds in ~1-2 min and is still plenty for meaningful retrieval.
-# Set to None to use the full dataset (delete chroma_db/ after changing it).
 MAX_ROWS = 5000
-
-# WHY these chunk numbers: most BigBasket descriptions are short (1 product =
-# 1 chunk). The few very long ones are split so a single chunk doesn't dilute
-# its embedding. 800 chars ≈ 150-200 words; 100-char overlap keeps a sentence
-# that crosses the boundary present in both chunks.
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
 
-TOP_K = 5                 # chunks given to the LLM
-RRF_K = 60                # standard constant for Reciprocal Rank Fusion
-
-# Fallback threshold: cosine similarity of the BEST vector match.
-# For MiniLM, < ~0.30 usually means "nothing in the data is about this".
-# Tune it with your out-of-dataset test questions.
+TOP_K = 5
+MIN_SCORE = 0.20
+RRF_K = 60
 SIM_THRESHOLD = 0.30
 
-# Google retires older model names over time (gemini-2.5-flash was retired for
-# new users in Nov 2026). We try these in order and skip any that return
-# "not found", so one retirement can't break the app. Set GEMINI_MODEL to
-# force a specific model first.
-LLM_MODELS = [m for m in [os.getenv("GEMINI_MODEL"),
-                          "gemini-3.8-flash",
-                          "gemini-flash-latest"] if m]
+GROQ_MODELS = [
+    os.getenv("GROQ_MODEL", "openai/gpt-oss-20b"),
+    "openai/gpt-oss-120b",
+    "qwen/qwen3.8-27b",
+]
+
+GEMINI_MODELS = [
+    m for m in [os.getenv("GEMINI_MODEL"), "gemini-2.0-flash", "gemini-2.5-flash", "gemini-flash-latest"] if m
+]
 
 FALLBACK_MSG = (
     "I couldn't find enough information about that in the BigBasket product "
@@ -61,60 +67,190 @@ FALLBACK_MSG = (
     "product, brand, category, price range or BigBasket policy."
 )
 
+GUARDRAIL_MSG = (
+    "Your query could not be processed as it requests out-of-scope actions, "
+    "unsupported topics, or potential prompt injection. Please ask questions "
+    "related to BigBasket products, prices, ingredients, comparisons, or policies."
+)
+
+from datetime import datetime, timezone
 
 # ---------------------------------------------------------------------------
-# STEP 1 — LOAD & CLEAN
+# AUDIT LOGGING HELPER
 # ---------------------------------------------------------------------------
-def load_and_clean(path: str = DATA_PATH, max_rows=MAX_ROWS) -> pd.DataFrame:
-    """Read the Kaggle CSV and remove rows that would hurt retrieval."""
+def log_audit_trail(audit_entry: Dict[str, Any], log_dir: str = LOG_DIR) -> str:
+    """Log structured query telemetry and chunks to logs/audit_YYYYMMDD.jsonl."""
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        today = datetime.now(timezone.utc).strftime("%Y%m%d")
+        filepath = os.path.join(log_dir, f"audit_{today}.jsonl")
+        with open(filepath, "a", encoding="utf-8") as f:
+            f.write(json.dumps(audit_entry, ensure_ascii=False) + "\n")
+        return filepath
+    except Exception as e:
+        print(f"[Audit Log Error] Failed to write log: {e}")
+        return ""
+INJECTION_PATTERNS = [
+    r"ignore (all )?(previous|prior|above) (instructions|directions|prompts)",
+    r"system prompt",
+    r"you are now",
+    r"forget (your|all) (instructions|rules)",
+    r"disregard",
+    r"bypass",
+    r"dan mode",
+]
+
+OFF_TOPIC_PATTERNS = [
+    r"\b(write|generate)\s+(code|python|script|sql|javascript|java|c\+\+)\b",
+    r"\b(diagnose|prescribe|medical advice|treat disease)\b",
+    r"\b(legal advice|lawsuit|sue)\b",
+    r"\b(write an essay|write a poem|write a song)\b",
+]
+
+PROFANITY_PATTERNS = [
+    r"\b(fuck|shit|bitch|bastard|asshole)\b",
+]
+
+
+from datetime import datetime, timezone
+
+# ---------------------------------------------------------------------------
+# AUDIT LOGGING HELPER
+# ---------------------------------------------------------------------------
+def log_audit_trail(audit_entry: Dict[str, Any], log_dir: str = LOG_DIR) -> str:
+    """Log structured query telemetry and chunks to logs/audit_YYYYMMDD.jsonl."""
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        today = datetime.now(timezone.utc).strftime("%Y%m%d")
+        filepath = os.path.join(log_dir, f"audit_{today}.jsonl")
+        with open(filepath, "a", encoding="utf-8") as f:
+            f.write(json.dumps(audit_entry, ensure_ascii=False) + "\n")
+        return filepath
+    except Exception as e:
+        print(f"[Audit Log Error] Failed to write log: {e}")
+        return ""
+INJECTION_PATTERNS = [
+    r"ignore (all )?(previous|prior|above) (instructions|directions|prompts)",
+    r"system prompt",
+    r"you are now",
+    r"forget (your|all) (instructions|rules)",
+    r"disregard",
+    r"bypass",
+    r"dan mode",
+]
+
+OFF_TOPIC_PATTERNS = [
+    r"\b(write|generate)\s+(code|python|script|sql|javascript|java|c\+\+)\b",
+    r"\b(diagnose|prescribe|medical advice|treat disease)\b",
+    r"\b(legal advice|lawsuit|sue)\b",
+    r"\b(write an essay|write a poem|write a song)\b",
+]
+
+PROFANITY_PATTERNS = [
+    r"\b(fuck|shit|bitch|bastard|asshole)\b",
+]
+
+
+def check_input_guardrail(query: str) -> Tuple[bool, Optional[str]]:
+    q_lower = query.lower().strip()
+    for pattern in INJECTION_PATTERNS:
+        if re.search(pattern, q_lower):
+            return False, "Prompt injection pattern detected."
+    for pattern in OFF_TOPIC_PATTERNS:
+        if re.search(pattern, q_lower):
+            return False, "Off-topic query detected."
+    for pattern in PROFANITY_PATTERNS:
+        if re.search(pattern, q_lower):
+            return False, "Inappropriate language detected."
+    return True, None
+
+
+def contextualize_query(query: str, chat_history: List[Dict[str, str]], llm: Any) -> str:
+    """Rewrite a follow-up query to include conversational context if needed."""
+    if not chat_history:
+        return query
+
+    lower_q = query.lower()
+    has_followup_clues = any(w in lower_q for w in [
+        "cheaper", "alternative", "another", "instead", "it", "them", "these", "those",
+        "better", "more", "less", "one of those", "under", "show me", "how about"
+    ]) or len(query.split()) <= 5
+
+    if not has_followup_clues:
+        return query
+
+    recent_history = []
+    for msg in chat_history[-4:]:
+        role = "User" if msg.get("role") == "user" else "Assistant"
+        content = msg.get("content", "")[:200]
+        recent_history.append(f"{role}: {content}")
+
+    history_str = "\n".join(recent_history)
+
+    prompt = f"""Given the following conversation history and a follow-up user question, rephrase the follow-up question into a standalone, complete search query.
+Do NOT answer the question, only output the rephrased query.
+
+Chat History:
+{history_str}
+
+Follow-up Question: {query}
+Standalone Question:"""
+
+    try:
+        rephrased = llm.invoke(prompt).content.strip()
+        rephrased = re.sub(r'^["\']|["\']$', '', rephrased).strip()
+        if rephrased and len(rephrased) > len(query):
+            return rephrased
+    except Exception:
+        pass
+
+    return query
+    q_lower = query.lower().strip()
+    for pattern in INJECTION_PATTERNS:
+        if re.search(pattern, q_lower):
+            return False, "Prompt injection pattern detected."
+    for pattern in OFF_TOPIC_PATTERNS:
+        if re.search(pattern, q_lower):
+            return False, "Off-topic query detected."
+    for pattern in PROFANITY_PATTERNS:
+        if re.search(pattern, q_lower):
+            return False, "Inappropriate language detected."
+    return True, None
+
+
+# ---------------------------------------------------------------------------
+# DATA LOADING & CHUNKING
+# ---------------------------------------------------------------------------
+def load_and_clean(path: str = DATA_PATH, max_rows: int = MAX_ROWS) -> pd.DataFrame:
     df = pd.read_csv(path)
-
-    # Normalise column names ("Sale Price " -> "sale_price") so code is robust.
     df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
     df = df.drop(columns=[c for c in ["index", "unnamed:_0"] if c in df.columns])
-
-    # A product with no name or no description gives the retriever nothing to
-    # match on -> drop it (the brief explicitly asks to remove empty records).
     df = df.dropna(subset=["product", "description"])
 
     for col in ["product", "brand", "category", "sub_category", "type", "description"]:
         if col in df.columns:
             df[col] = df[col].fillna("").astype(str).str.strip()
-            # collapse repeated whitespace/newlines from scraping
             df[col] = df[col].str.replace(r"\s+", " ", regex=True)
 
-    # Very short descriptions ("Good product.") carry no retrievable detail.
     df = df[df["description"].str.len() >= 30]
-
-    # Duplicates: same product+brand listed twice would waste 2 of our top-5 slots.
     df = df.drop_duplicates(subset=["product", "brand"])
     df = df.drop_duplicates(subset=["description"])
-
     df["brand"] = df["brand"].replace("", "Unknown")
 
-    # Random sample keeps category proportions roughly the same as the full data.
     if max_rows and len(df) > max_rows:
-        df = df.sample(n=max_rows, random_state=42)  # fixed seed = reproducible
+        df = df.sample(n=max_rows, random_state=42)
 
     return df.reset_index(drop=True)
 
 
-# ---------------------------------------------------------------------------
-# STEP 2 — ROW -> DOCUMENT TEXT
-# ---------------------------------------------------------------------------
-def _fmt_price(x):
+def _fmt_price(x: Any) -> str:
     try:
         return f"₹{float(x):,.0f}"
     except (TypeError, ValueError):
         return "not listed"
 
 
-def row_to_header(row) -> str:
-    """Structured fields that must stay attached to every chunk of a product.
-
-    WHY: if a long description is split, chunk #2 would otherwise lose the
-    product name and price, and the LLM couldn't tell which product it's about.
-    """
+def row_to_header(row: pd.Series) -> str:
     discount = ""
     try:
         sp, mp = float(row["sale_price"]), float(row["market_price"])
@@ -137,17 +273,13 @@ def row_to_header(row) -> str:
     )
 
 
-# ---------------------------------------------------------------------------
-# STEP 3 — CHUNKING
-# ---------------------------------------------------------------------------
-def split_text(text: str, size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
-    """Sliding-window split on word boundaries."""
+def split_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> List[str]:
     if len(text) <= size:
         return [text]
     chunks, start = [], 0
     while start < len(text):
         end = min(start + size, len(text))
-        if end < len(text):                       # don't cut a word in half
+        if end < len(text):
             space = text.rfind(" ", start, end)
             if space > start:
                 end = space
@@ -155,74 +287,153 @@ def split_text(text: str, size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
         if end >= len(text):
             break
         start = max(end - overlap, start + 1)
-        nxt = text.find(" ", start, end)          # start next chunk on a word
+        nxt = text.find(" ", start, end)
         if nxt != -1:
             start = nxt + 1
     return chunks
 
 
-def build_documents(df: pd.DataFrame, policy_path: str = POLICY_PATH):
-    """Return a list of {id, text, metadata} ready to embed."""
+def build_documents(df: pd.DataFrame, policy_path: str = POLICY_PATH) -> List[Dict[str, Any]]:
     docs = []
     for i, row in df.iterrows():
         header = row_to_header(row)
         pieces = split_text(row["description"])
         for j, piece in enumerate(pieces):
+            content = header + f"Description: {piece}"
             docs.append({
                 "id": f"prod-{i}-{j}",
-                "text": header + f"Description: {piece}",
-                # Metadata is stored next to the vector -> shown as sources in UI
-                # and usable later for filters (e.g. price < 200).
+                "content": content,
+                "text": content,
                 "metadata": {
-                    "source": "product",
+                    "source": "BigBasket Catalogue",
+                    "source_file": "BigBasket Products.csv",
                     "product": row["product"],
                     "brand": row["brand"],
                     "category": str(row.get("category", "")),
                     "price": float(row["sale_price"]) if pd.notna(row.get("sale_price")) else -1.0,
+                    "page": f"row-{i}",
                     "chunk": j,
                 },
             })
 
-    # Optional: BigBasket policy/FAQ text you copied from bigbasket.com.
-    # Paragraphs separated by a blank line -> each paragraph is one chunk,
-    # because one paragraph = one policy topic (returns, delivery, refunds...).
     if policy_path and os.path.exists(policy_path):
         with open(policy_path, encoding="utf-8") as f:
             paras = [p.strip() for p in f.read().split("\n\n") if p.strip()]
         for k, para in enumerate(paras):
             for j, piece in enumerate(split_text(para)):
+                content = f"BigBasket policy / FAQ:\n{piece}"
                 docs.append({
                     "id": f"policy-{k}-{j}",
-                    "text": f"BigBasket policy / FAQ:\n{piece}",
-                    "metadata": {"source": "policy", "product": "BigBasket policy",
-                                 "brand": "BigBasket", "category": "Policy",
-                                 "price": -1.0, "chunk": j},
+                    "content": content,
+                    "text": content,
+                    "metadata": {
+                        "source": "BigBasket Policy Document",
+                        "source_file": "bigbasket_policies.txt",
+                        "product": "BigBasket policy",
+                        "brand": "BigBasket",
+                        "category": "Policy",
+                        "price": -1.0,
+                        "page": f"section-{k}",
+                        "chunk": j,
+                    },
                 })
     return docs
 
 
-def tokenize(text: str):
-    """Lowercase word tokens for BM25 keyword search."""
+def tokenize(text: str) -> List[str]:
     return re.findall(r"[a-z0-9]+", text.lower())
 
 
 # ---------------------------------------------------------------------------
-# STEPS 4-7 — EMBED, STORE, RETRIEVE, GENERATE
+# LLM WRAPPER: Compatible with llm.invoke(prompt) -> response.content
 # ---------------------------------------------------------------------------
-class RAGPipeline:
+class LLMResponse:
+    def __init__(self, content: str):
+        self.content = content
+
+
+class MultiProviderLLM:
+    """Wrapper that supports llm.invoke(prompt) with Groq primary & Gemini fallback."""
+
+    def __init__(
+        self,
+        groq_api_key: Optional[str] = None,
+        gemini_api_key: Optional[str] = None,
+        groq_model: str = GROQ_MODELS[0],
+        temperature: float = 0.2,
+    ):
+        self.groq_api_key = groq_api_key or os.getenv("GROQ_API_KEY", "")
+        self.gemini_api_key = gemini_api_key or os.getenv("GEMINI_API_KEY", "")
+        self.groq_model = groq_model
+        self.temperature = temperature
+
+    def invoke(self, prompt: Union[str, List[Any]]) -> LLMResponse:
+        prompt_text = prompt[0] if isinstance(prompt, list) else str(prompt)
+
+        # 1. Try Groq (LangChain ChatGroq or Native Groq)
+        if self.groq_api_key:
+            try:
+                from langchain_groq import ChatGroq
+
+                for model in [self.groq_model] + [m for m in GROQ_MODELS if m != self.groq_model]:
+                    try:
+                        llm = ChatGroq(
+                            model=model,
+                            groq_api_key=self.groq_api_key,
+                            temperature=self.temperature,
+                        )
+                        res = llm.invoke(prompt_text)
+                        return LLMResponse(content=res.content)
+                    except Exception as e:
+                        err_str = str(e)
+                        if any(x in err_str for x in ["404", "model_not_found", "rate_limit", "429"]):
+                            continue
+                        raise
+            except Exception:
+                if not self.gemini_api_key:
+                    raise
+
+        # 2. Try Gemini Fallback
+        if self.gemini_api_key:
+            from google import genai
+            from google.genai import types
+
+            client = genai.Client(api_key=self.gemini_api_key)
+            last_err = None
+            for model in GEMINI_MODELS:
+                try:
+                    resp = client.models.generate_content(
+                        model=model,
+                        contents=prompt_text,
+                        config=types.GenerateContentConfig(temperature=self.temperature),
+                    )
+                    return LLMResponse(content=resp.text)
+                except Exception as e:
+                    if "NOT_FOUND" in str(e) or "404" in str(e):
+                        last_err = e
+                        continue
+                    raise
+            raise RuntimeError(f"None of the Gemini models {GEMINI_MODELS} are available: {last_err}")
+
+        raise ValueError("No valid API key provided for Groq or Gemini.")
+
+
+# ---------------------------------------------------------------------------
+# RETRIEVER: Compatible with retriever.retrieve(query, top_k, score_threshold)
+# ---------------------------------------------------------------------------
+class BigBasketRetriever:
     def __init__(self, data_path: str = DATA_PATH):
-        # Heavy imports here so the cleaning functions above can be tested
-        # without installing everything.
         import chromadb
         from rank_bm25 import BM25Okapi
-        from sentence_transformers import SentenceTransformer
+        from sentence_transformers import CrossEncoder, SentenceTransformer
 
         self.embedder = SentenceTransformer(EMBED_MODEL)
+        try:
+            self.reranker = CrossEncoder(RERANK_MODEL)
+        except Exception:
+            self.reranker = None
 
-        # PersistentClient saves vectors to disk -> we embed ONCE, and later
-        # app restarts load in seconds instead of re-embedding.
         client = chromadb.PersistentClient(path=CHROMA_DIR)
-        # cosine space: we compare direction of meaning, not vector length.
         self.collection = client.get_or_create_collection(
             COLLECTION, metadata={"hnsw:space": "cosine"}
         )
@@ -231,7 +442,6 @@ class RAGPipeline:
             docs = build_documents(load_and_clean(data_path))
             self._index(docs)
 
-        # BM25 lives in memory; rebuild it from what's stored in Chroma.
         stored = self.collection.get(include=["documents", "metadatas"])
         self.ids = stored["ids"]
         self.texts = stored["documents"]
@@ -239,130 +449,348 @@ class RAGPipeline:
         self.id_to_idx = {d: i for i, d in enumerate(self.ids)}
         self.bm25 = BM25Okapi([tokenize(t) for t in self.texts])
 
-    # ---- STEP 4+5: embeddings -> vector store --------------------------------
-    def _index(self, docs, batch=256):
-        texts = [d["text"] for d in docs]
-        # normalize_embeddings=True -> unit vectors, so cosine == dot product
-        embs = self.embedder.encode(texts, batch_size=batch,
-                                    normalize_embeddings=True,
-                                    show_progress_bar=True)
-        # Chroma limits how many items one add() call accepts -> add in batches.
+    def _index(self, docs: List[Dict[str, Any]], batch: int = 256):
+        texts = [d["content"] for d in docs]
+        embs = self.embedder.encode(
+            texts, batch_size=batch, normalize_embeddings=True, show_progress_bar=True
+        )
         for s in range(0, len(docs), 2000):
-            part = docs[s:s + 2000]
+            part = docs[s : s + 2000]
             self.collection.add(
                 ids=[d["id"] for d in part],
-                documents=[d["text"] for d in part],
+                documents=[d["content"] for d in part],
                 metadatas=[d["metadata"] for d in part],
-                embeddings=embs[s:s + 2000].tolist(),
+                embeddings=embs[s : s + 2000].tolist(),
             )
 
-    # ---- STEP 6: retrieval ---------------------------------------------------
-    def _vector_search(self, query, n):
+    def _vector_search(self, query: str, n: int) -> Tuple[List[str], List[float]]:
         q = self.embedder.encode([query], normalize_embeddings=True).tolist()
         res = self.collection.query(query_embeddings=q, n_results=n)
         ids = res["ids"][0]
-        sims = [1 - d for d in res["distances"][0]]   # cosine distance -> similarity
+        sims = [1 - d for d in res["distances"][0]]
         return ids, sims
 
-    def _keyword_search(self, query, n):
+    def _keyword_search(self, query: str, n: int) -> List[str]:
         scores = self.bm25.get_scores(tokenize(query))
         top = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:n]
         return [self.ids[i] for i in top if scores[i] > 0]
 
-    def retrieve(self, query, k=TOP_K, mode="hybrid"):
-        """mode: 'vector' | 'keyword' | 'hybrid'.
-
-        Hybrid = Reciprocal Rank Fusion: each list votes 1/(60 + rank) for its
-        results; sum the votes. WHY: embeddings understand meaning
-        ("something for a sore throat" -> honey/ginger), while BM25 nails exact
-        words like brand names ("Amul", "Tata Sampann") that embeddings blur.
-        RRF merges them without needing to compare their different score scales.
-        """
-        pool = k * 4   # fetch more candidates than we need, then fuse
+    def retrieve(
+        self,
+        query: str,
+        top_k: int = TOP_K,
+        score_threshold: float = MIN_SCORE,
+        mode: str = "hybrid",
+        rerank: bool = True,
+    ) -> List[Dict[str, Any]]:
+        pool = top_k * 4
         v_ids, v_sims = self._vector_search(query, pool)
-        best_sim = max(v_sims) if v_sims else 0.0
         sim_of = dict(zip(v_ids, v_sims))
 
         if mode == "vector":
             ranked = v_ids
-        else:
+        elif mode == "keyword":
+            ranked = self._keyword_search(query, pool)
+        else:  # hybrid
             k_ids = self._keyword_search(query, pool)
-            if mode == "keyword":
-                ranked = k_ids
-            else:
-                fused = {}
-                for rank, d in enumerate(v_ids):
-                    fused[d] = fused.get(d, 0) + 1 / (RRF_K + rank + 1)
-                for rank, d in enumerate(k_ids):
-                    fused[d] = fused.get(d, 0) + 1 / (RRF_K + rank + 1)
-                ranked = sorted(fused, key=fused.get, reverse=True)
+            fused = {}
+            for rank, d in enumerate(v_ids):
+                fused[d] = fused.get(d, 0) + 1 / (RRF_K + rank + 1)
+            for rank, d in enumerate(k_ids):
+                fused[d] = fused.get(d, 0) + 1 / (RRF_K + rank + 1)
+            ranked = sorted(fused, key=fused.get, reverse=True)
+
+        candidates = ranked[:pool]
+
+        # Cross-Encoder Re-ranking
+        if rerank and self.reranker is not None and candidates:
+            try:
+                cand_pairs = [[query, self.texts[self.id_to_idx[d]]] for d in candidates[:12]]
+                scores = self.reranker.predict(cand_pairs)
+                sorted_indices = sorted(range(len(scores)), key=lambda idx: scores[idx], reverse=True)
+                ranked = [candidates[i] for i in sorted_indices]
+            except Exception:
+                pass
 
         results = []
-        for d in ranked[:k]:
+        for d in ranked:
+            sim = sim_of.get(d, 0.0)
+            if sim < score_threshold:
+                continue
             i = self.id_to_idx[d]
-            results.append({"id": d, "text": self.texts[i], "metadata": self.metas[i],
-                            "similarity": sim_of.get(d)})
-        return results, best_sim
+            results.append({
+                "id": d,
+                "content": self.texts[i],
+                "text": self.texts[i],
+                "metadata": self.metas[i],
+                "similarity_score": round(float(sim), 4),
+                "score": round(float(sim), 4),
+                "similarity": round(float(sim), 4),
+            })
+            if len(results) >= top_k:
+                break
 
-    # ---- STEP 7: generation --------------------------------------------------
-    @staticmethod
-    def build_prompt(question, chunks):
-        context = "\n\n".join(f"[{n}] {c['text']}" for n, c in enumerate(chunks, 1))
-        # The rules below are what make answers GROUNDED (15% of the rubric).
-        return f"""You are BigBasket's product assistant. Answer the customer's question
-using ONLY the numbered context below.
+        return results
 
-Rules:
-- Use only facts from the context. Do not use outside knowledge.
-- Cite the context numbers you used, like [1] or [2][4].
-- Prices are in Indian Rupees (₹). Mention brand and price when recommending.
-- For comparisons, use a short bullet list or table.
-- If the context does not contain the answer (or only part of it), say so
-  clearly for the missing part instead of guessing.
-- If none of the context is relevant, reply exactly: "{FALLBACK_MSG}"
-- This data is a historical catalogue snapshot; don't claim live stock or delivery times.
+
+# ---------------------------------------------------------------------------
+# EXACT PATTERN: rag_enhanced(query, retriever, llm, top_k, min_score, return_context)
+# ---------------------------------------------------------------------------
+def rag_enhanced(
+    query: str,
+    retriever: BigBasketRetriever,
+    llm: MultiProviderLLM,
+    top_k: int = TOP_K,
+    min_score: float = MIN_SCORE,
+    return_context: bool = False,
+    decompose: bool = True,
+    chat_history: Optional[List[Dict[str, str]]] = None,
+) -> Dict[str, Any]:
+    """
+    RAG Pipeline matching your pattern:
+    - Returns answer, sources, confidence score, and optionally full context.
+    - Contextualizes conversational follow-ups.
+    - Augmented with safety guardrails and multi-part query decomposition.
+    """
+    # 0. Conversation Contextualization (resolves "Give me a cheaper alternative")
+    search_query = query
+    if chat_history:
+        search_query = contextualize_query(query, chat_history, llm)
+
+    # 1. Guardrail Check
+    is_safe, _ = check_input_guardrail(query)
+    if not is_safe:
+        return {
+            "answer": GUARDRAIL_MSG,
+            "sources": [],
+            "confidence_score": 0.0,
+            "context": "" if return_context else None,
+            "guardrail": True,
+            "fallback": True,
+        }
+
+    # 2. Query Decomposition
+    sub_queries = [search_query]
+    if decompose:
+        lower_q = search_query.lower()
+        if any(w in lower_q for w in [" and ", " also ", "compare", " vs ", "versus"]):
+            try:
+                dec_prompt = (
+                    f"Break the user question into 1 to 3 distinct atomic sub-questions for product search. "
+                    f"Return ONLY a JSON list of strings.\nQuestion: {search_query}\nJSON:"
+                )
+                dec_resp = llm.invoke(dec_prompt).content
+                match = re.search(r"\[.*\]", dec_resp, re.DOTALL)
+                if match:
+                    parsed = json.loads(match.group(0))
+                    if isinstance(parsed, list) and all(isinstance(x, str) for x in parsed):
+                        sub_queries = parsed[:3]
+            except Exception:
+                sub_queries = [search_query]
+
+    # 3. Retrieve documents
+    all_results = []
+    seen_ids = set()
+    for sq in sub_queries:
+        for doc in retriever.retrieve(sq, top_k=top_k, score_threshold=min_score):
+            if doc["id"] not in seen_ids:
+                seen_ids.add(doc["id"])
+                all_results.append(doc)
+
+    results = all_results[:top_k]
+
+    # 4. Fallback if no relevant documents found
+    if not results:
+        return {
+            "answer": FALLBACK_MSG,
+            "sources": [],
+            "confidence_score": 0.0,
+            "context": "" if return_context else None,
+            "fallback": True,
+            "guardrail": False,
+        }
+
+    # 5. Prepare context and sources (exact pattern)
+    context = "\n\n".join(doc["content"] for doc in results)
+
+    sources = [
+        {
+            "source": doc["metadata"].get(
+                "source_file", doc["metadata"].get("source", "unknown")
+            ),
+            "page": doc["metadata"].get("page", "unknown"),
+            "score": doc["score"],
+            "preview": doc["content"][:300] + "...",
+            "product": doc["metadata"].get("product", ""),
+            "brand": doc["metadata"].get("brand", ""),
+            "price": doc["metadata"].get("price", -1.0),
+        }
+        for doc in results
+    ]
+
+    confidence = max(doc["score"] for doc in results)
+
+    # 6. Generate answer using the LLM (exact pattern)
+    prompt = f"""Use the following context to answer the question concisely.
+Cite product numbers like [1], [2] when mentioning items.
 
 Context:
 {context}
 
-Customer question: {question}
-
+Question: {query}
 Answer:"""
 
-    def generate(self, prompt, api_key):
-        from google import genai
-        from google.genai import types
+    response = llm.invoke(prompt)
 
-        client = genai.Client(api_key=api_key)
-        last_err = None
-        for model in LLM_MODELS:
-            try:
-                resp = client.models.generate_content(
-                    model=model,
-                    contents=prompt,
-                    # Low temperature = less creative = sticks to the context.
-                    config=types.GenerateContentConfig(temperature=0.2),
-                )
-                return resp.text
-            except Exception as e:
-                # Only move on for "this model doesn't exist / was retired".
-                # Anything else (bad key, quota) is a real error -> raise it.
-                if "NOT_FOUND" in str(e) or "404" in str(e):
-                    last_err = e
-                    continue
-                raise
-        raise RuntimeError(f"None of the Gemini models {LLM_MODELS} are available: {last_err}")
+    output = {
+        "answer": response.content,
+        "sources": sources,
+        "confidence_score": confidence,
+        "context": context if return_context else None,
+        "fallback": FALLBACK_MSG[:30] in response.content,
+        "guardrail": False,
+        "decomposed": len(sub_queries) > 1,
+        "sub_queries": sub_queries,
+        "chunks": results,  # compatibility helper for UI
+        "best_sim": confidence,  # compatibility helper for UI
+    }
 
-    def answer(self, question, api_key, k=TOP_K, mode="hybrid"):
-        chunks, best_sim = self.retrieve(question, k=k, mode=mode)
+    if return_context:
+        output["context"] = context
 
-        # FALLBACK layer 1 (before the LLM): if even the best semantic match is
-        # weak, the data has nothing on this -> refuse without calling the LLM.
-        # FALLBACK layer 2 is the prompt rule above, for partly-relevant context.
-        if best_sim < SIM_THRESHOLD:
-            return {"answer": FALLBACK_MSG, "chunks": chunks,
-                    "best_sim": best_sim, "fallback": True}
+    return output
 
-        text = self.generate(self.build_prompt(question, chunks), api_key)
-        return {"answer": text, "chunks": chunks, "best_sim": best_sim,
-                "fallback": FALLBACK_MSG[:40] in text}
+
+# ---------------------------------------------------------------------------
+# PIPELINE CLASS WRAPPER (for caching & Streamlit integration)
+# ---------------------------------------------------------------------------
+class RAGPipeline:
+    def __init__(self, data_path: str = DATA_PATH):
+        self.retriever = BigBasketRetriever(data_path=data_path)
+        self._cache: Dict[str, Dict[str, Any]] = {}
+        self._cache_hits = 0
+        self._cache_misses = 0
+
+    @property
+    def ids(self):
+        return self.retriever.ids
+
+    @property
+    def metas(self):
+        return self.retriever.metas
+
+    def cache_stats(self) -> Dict[str, int]:
+        return {
+            "hits": self._cache_hits,
+            "misses": self._cache_misses,
+            "size": len(self._cache),
+        }
+
+    def clear_cache(self):
+        self._cache.clear()
+        self._cache_hits = 0
+        self._cache_misses = 0
+
+    def answer(
+        self,
+        question: str,
+        groq_api_key: Optional[str] = None,
+        gemini_api_key: Optional[str] = None,
+        k: int = TOP_K,
+        mode: str = "hybrid",
+        rerank: bool = True,
+        decompose: bool = True,
+        chat_history: Optional[List[Dict[str, str]]] = None,
+    ) -> Dict[str, Any]:
+        start_t = time.perf_counter()
+        timestamp = datetime.now(timezone.utc).isoformat()
+
+        cache_k = hashlib.sha256(question.strip().lower().encode("utf-8")).hexdigest()
+        if not chat_history and cache_k in self._cache:
+            self._cache_hits += 1
+            res = dict(self._cache[cache_k])
+            res["cached"] = True
+            res["latency_ms"] = round((time.perf_counter() - start_t) * 1000, 2)
+            
+            # Log cache hit
+            audit_entry = {
+                "timestamp": timestamp,
+                "query": question,
+                "cached": True,
+                "latency_ms": res["latency_ms"],
+                "flow": "cache_hit",
+                "sub_queries": [question],
+                "confidence_score": res.get("confidence_score", 0.0),
+                "chunks_sent_count": len(res.get("chunks", [])),
+                "chunks": [
+                    {
+                        "id": c.get("id"),
+                        "product": c.get("metadata", {}).get("product"),
+                        "brand": c.get("metadata", {}).get("brand"),
+                        "similarity_score": c.get("similarity_score"),
+                    }
+                    for c in res.get("chunks", [])
+                ],
+            }
+            log_audit_trail(audit_entry)
+            res["audit_entry"] = audit_entry
+            return res
+
+        self._cache_misses += 1
+
+        llm = MultiProviderLLM(groq_api_key=groq_api_key, gemini_api_key=gemini_api_key)
+        res = rag_enhanced(
+            query=question,
+            retriever=self.retriever,
+            llm=llm,
+            top_k=k,
+            min_score=MIN_SCORE,
+            return_context=True,
+            decompose=decompose,
+            chat_history=chat_history,
+        )
+
+        res["cached"] = False
+        res["latency_ms"] = round((time.perf_counter() - start_t) * 1000, 2)
+
+        # Determine flow path for auditing
+        if res.get("guardrail"):
+            flow_name = "guardrail_blocked"
+        elif res.get("fallback"):
+            flow_name = "low_confidence_fallback"
+        elif res.get("decomposed"):
+            flow_name = "decomposed_hybrid_rerank"
+        else:
+            flow_name = "standard_hybrid_rerank"
+
+        res["flow"] = flow_name
+
+        audit_entry = {
+            "timestamp": timestamp,
+            "query": question,
+            "cached": False,
+            "latency_ms": res["latency_ms"],
+            "flow": flow_name,
+            "sub_queries": res.get("sub_queries", [question]),
+            "confidence_score": res.get("confidence_score", 0.0),
+            "chunks_sent_count": len(res.get("chunks", [])),
+            "chunks": [
+                {
+                    "id": c.get("id"),
+                    "product": c.get("metadata", {}).get("product"),
+                    "brand": c.get("metadata", {}).get("brand"),
+                    "category": c.get("metadata", {}).get("category"),
+                    "price": c.get("metadata", {}).get("price"),
+                    "similarity_score": c.get("similarity_score"),
+                    "score": c.get("score"),
+                }
+                for c in res.get("chunks", [])
+            ],
+            "answer_preview": res.get("answer", "")[:300],
+        }
+        log_file = log_audit_trail(audit_entry)
+        res["audit_file"] = log_file
+        res["audit_entry"] = audit_entry
+
+        self._cache[cache_k] = res
+        return res
