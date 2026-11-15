@@ -47,7 +47,13 @@ RRF_K = 60                # standard constant for Reciprocal Rank Fusion
 # Tune it with your out-of-dataset test questions.
 SIM_THRESHOLD = 0.30
 
-LLM_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+# Google retires older model names over time (gemini-2.5-flash was retired for
+# new users in Nov 2026). We try these in order and skip any that return
+# "not found", so one retirement can't break the app. Set GEMINI_MODEL to
+# force a specific model first.
+LLM_MODELS = [m for m in [os.getenv("GEMINI_MODEL"),
+                          "gemini-3.8-flash",
+                          "gemini-flash-latest"] if m]
 
 FALLBACK_MSG = (
     "I couldn't find enough information about that in the BigBasket product "
@@ -328,13 +334,24 @@ Answer:"""
         from google.genai import types
 
         client = genai.Client(api_key=api_key)
-        resp = client.models.generate_content(
-            model=LLM_MODEL,
-            contents=prompt,
-            # Low temperature = less creative = sticks to the context.
-            config=types.GenerateContentConfig(temperature=0.2),
-        )
-        return resp.text
+        last_err = None
+        for model in LLM_MODELS:
+            try:
+                resp = client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    # Low temperature = less creative = sticks to the context.
+                    config=types.GenerateContentConfig(temperature=0.2),
+                )
+                return resp.text
+            except Exception as e:
+                # Only move on for "this model doesn't exist / was retired".
+                # Anything else (bad key, quota) is a real error -> raise it.
+                if "NOT_FOUND" in str(e) or "404" in str(e):
+                    last_err = e
+                    continue
+                raise
+        raise RuntimeError(f"None of the Gemini models {LLM_MODELS} are available: {last_err}")
 
     def answer(self, question, api_key, k=TOP_K, mode="hybrid"):
         chunks, best_sim = self.retrieve(question, k=k, mode=mode)

@@ -384,7 +384,7 @@ with st.container(key="chat"):
                     result = pipeline.answer(question, api_key, k=top_k, mode=mode)
                 except Exception as e:  # e.g. bad API key / no internet
                     st.session_state.messages.pop()
-                    st.error(f"Couldn't get an answer: {e}. Check the API key and try again.")
+                    st.error(f"Couldn't get an answer from Gemini: {e}")
                     st.stop()
 
             content = FALLBACK_MSG if result["fallback"] else result["answer"]
