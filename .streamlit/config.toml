@@ -1,0 +1,12 @@
+# Streamlit theme — BigBasket-style green, light background.
+# Changes here need an app restart (Ctrl+C in Terminal, then run.command again).
+[theme]
+base = "light"
+primaryColor = "#689F38"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F3F8EC"
+textColor = "#1F2A18"
+font = "sans serif"
+
+[client]
+toolbarMode = "minimal"
