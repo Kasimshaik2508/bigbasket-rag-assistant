@@ -2,6 +2,11 @@
 app.py — Streamlit chat UI for the BigBasket RAG assistant.
 
 Run: streamlit run app.py
+
+Layout follows familiar online-grocery patterns (header bar, aisle bar,
+product cards with discount badge and struck-through MRP) so it feels like
+shopping, while keeping our own name and look: the data is BigBasket's
+public Kaggle catalogue, but this app is not BigBasket.
 """
 
 import html
@@ -15,7 +20,7 @@ from product_art import parse_header, pick_art
 
 from rag import FALLBACK_MSG, GUARDRAIL_MSG, RAGPipeline, SIM_THRESHOLD, TOP_K
 
-st.set_page_config(page_title="BigBasket Assistant", page_icon="🧺", layout="wide")
+st.set_page_config(page_title="Basket Assistant", page_icon="🧺", layout="wide")
 
 # Initialize theme state
 if "dark_mode" not in st.session_state:
@@ -23,516 +28,140 @@ if "dark_mode" not in st.session_state:
 
 dark = st.session_state.dark_mode
 
-# Precision Design Tokens: Editorial Warmth + Dark Mode System
+# ---------------------------------------------------------------------------
+# DESIGN TOKENS
+# Store-style layout (white page, green accents, product cards with discount
+# badges and struck-through MRP) in our own identity — no BigBasket logo or
+# trademarked branding, since this is a student project on their public data.
+# ---------------------------------------------------------------------------
 if dark:
-    BG_PAGE = "#0F120E"
-    BG_CARD = "#171D16"
-    BG_CARD_SUBTLE = "#1C241B"
-    BG_SIDEBAR = "#141A13"
-    BORDER_MAIN = "#283526"
-    BORDER_MUTED = "#1E271C"
-    TEXT_MAIN = "#EDEFEA"
-    TEXT_MUTED = "#8D9A89"
-    TEXT_ACCENT = "#52A347"
-    LEAF = "#429339"
-    HALDI = "#D9971E"
-    HALDI_TEXT = "#120E04"
-    TAG_BG = "#1A2218"
-    TAG_BORDER = "#2B3928"
-    TAG_STRING = "#3F563B"
-    RAIL_BG = "#385232"
-    HOVER_BG = "#222D20"
-    CHAT_INPUT_BORDER = "#3E5837"
-    CHAT_USER_BG = "#1C241B"
-    CHAT_BOT_BG = "#151B14"
-    NODATA_BG = "#261310"
-    NODATA_BORDER = "#8A2E1C"
-    NODATA_TEXT = "#E59E90"
+    BG_PAGE, BG_CARD, BG_SOFT, BG_SIDEBAR = "#0F130E", "#171C16", "#1D241B", "#131812"
+    BORDER, BORDER_SOFT = "#2A3527", "#212A1F"
+    TEXT, TEXT_MUTED = "#ECF0E9", "#97A392"
+    GREEN, GREEN_DEEP, GREEN_SOFT = "#7BC043", "#A6D67A", "#22301C"
+    BADGE_BG, BADGE_TEXT = "#4E8C1E", "#FFFFFF"
+    TILE_DARK, TILE_TEXT = "#2B4A1A", "#F1F7EA"
+    NODATA_BG, NODATA_BORDER, NODATA_TEXT = "#2A1612", "#B4462B", "#F0B3A6"
 else:
-    BG_PAGE = "#FAFCF8"
-    BG_CARD = "#FFFFFF"
-    BG_CARD_SUBTLE = "#F0F5EC"
-    BG_SIDEBAR = "#EEF4E8"
-    BORDER_MAIN = "#D5E2CC"
-    BORDER_MUTED = "#E2ECE0"
-    TEXT_MAIN = "#1A2617"
-    TEXT_MUTED = "#556450"
-    TEXT_ACCENT = "#255320"
-    LEAF = "#2F5D2A"
-    HALDI = "#E2A31B"
-    HALDI_TEXT = "#1B1705"
-    TAG_BG = "#FFFFFF"
-    TAG_BORDER = "#D2DFC7"
-    TAG_STRING = "#9DB58C"
-    RAIL_BG = "#2F5D2A"
-    HOVER_BG = "#EEF4E8"
-    CHAT_INPUT_BORDER = "#2F5D2A"
-    CHAT_USER_BG = "#F4F8F1"
-    CHAT_BOT_BG = "#FFFFFF"
-    NODATA_BG = "#FDF2EF"
-    NODATA_BORDER = "#B4462B"
-    NODATA_TEXT = "#602619"
+    BG_PAGE, BG_CARD, BG_SOFT, BG_SIDEBAR = "#F6F7F4", "#FFFFFF", "#F3F6EF", "#F3F6EF"
+    BORDER, BORDER_SOFT = "#E3E8DE", "#EDF0E9"
+    TEXT, TEXT_MUTED = "#1C2118", "#6B7266"
+    GREEN, GREEN_DEEP, GREEN_SOFT = "#4E8C1E", "#2E5A10", "#EDF5E4"
+    BADGE_BG, BADGE_TEXT = "#3F7D17", "#FFFFFF"
+    TILE_DARK, TILE_TEXT = "#24420F", "#FFFFFF"
+    NODATA_BG, NODATA_BORDER, NODATA_TEXT = "#FDF2EF", "#B4462B", "#602619"
 
 st.markdown(f"""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
 
-html, body, [class*="css"], .stApp, .stMarkdown, .stMarkdown p, .stMarkdown li, [data-testid="stMarkdownContainer"] p, [data-testid="stMarkdownContainer"] li {{
-  font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
-  color: {TEXT_MAIN} !important;
+.stApp, .stMarkdown, .stMarkdown p, .stMarkdown li, button, input, textarea, label,
+[data-testid="stMarkdownContainer"] p, [data-testid="stMarkdownContainer"] li {{
+  font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
 }}
-
-.stApp {{
-  background-color: {BG_PAGE} !important;
-}}
-
-/* Universal text color enforcement for all markdown and typography */
-p, span, li, h1, h2, h3, h4, h5, h6, strong, b, em, label, details, summary {{
-  color: {TEXT_MAIN};
-}}
-
-.stMarkdown,
-[data-testid="stMarkdownContainer"],
-[data-testid="stChatMessageContent"] {{
-  color: {TEXT_MAIN} !important;
-}}
-
-[data-testid="stChatMessageContent"] p,
-[data-testid="stChatMessageContent"] li,
-[data-testid="stChatMessageContent"] span,
-[data-testid="stChatMessageContent"] div,
-[data-testid="stChatMessageContent"] strong,
-[data-testid="stChatMessageContent"] b {{
-  color: {TEXT_MAIN} !important;
-}}
-
-/* Clean header and footer */
+.stApp {{ background: {BG_PAGE}; color: {TEXT}; }}
 .stDeployButton, #MainMenu, footer {{ display: none !important; }}
 header[data-testid="stHeader"] {{ background: transparent; }}
-.block-container {{ padding-top: 1.8rem; padding-bottom: 6.5rem; max-width: 1100px; }}
+.block-container {{ padding-top: 1.2rem; padding-bottom: 7rem; max-width: 1180px; }}
 
-/* Navigation bar */
-.top-nav {{
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding-bottom: 16px;
-  border-bottom: 1px solid {BORDER_MUTED};
-  margin-bottom: 24px;
-}}
-.brand {{
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  color: {LEAF};
-  font-family: 'Space Grotesk', sans-serif;
-  font-weight: 700;
-  font-size: 1.25rem;
-  letter-spacing: -0.02em;
-}}
-.brand .mark {{
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
-  background: {LEAF};
-  color: white;
-  display: grid;
-  place-items: center;
-  font-size: 1.15rem;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.08);
-}}
-.status-pill {{
-  font-size: 0.8rem;
-  font-weight: 600;
-  padding: 4px 10px;
-  border-radius: 9999px;
-  background: {BG_CARD_SUBTLE};
-  color: {TEXT_MUTED};
-  border: 1px solid {BORDER_MAIN};
-}}
+/* ---------- header bar ---------- */
+.hdr {{ display: flex; align-items: center; gap: 16px; background: {BG_CARD};
+       border: 1px solid {BORDER}; border-top: 3px solid {GREEN}; border-radius: 0 0 16px 16px;
+       padding: 14px 20px; margin: -6px 0 12px; }}
+.hdr .logo {{ width: 44px; height: 44px; border-radius: 12px; background: {GREEN};
+             display: grid; place-items: center; font-size: 1.45rem; flex: none; }}
+.hdr .title {{ font-weight: 800; font-size: 1.25rem; color: {TEXT}; letter-spacing: -0.01em; line-height: 1.1; }}
+.hdr .sub {{ font-size: .8rem; color: {TEXT_MUTED}; margin-top: 2px; }}
+.hdr .askbox {{ flex: 1; margin: 0 8px; border: 1.5px solid {BORDER}; border-radius: 10px;
+               padding: 10px 14px; color: {TEXT_MUTED}; font-size: .92rem; background: {BG_SOFT}; }}
+.hdr .chip {{ flex: none; background: {GREEN_SOFT}; color: {GREEN_DEEP}; border-radius: 10px;
+             padding: 8px 12px; font-size: .8rem; font-weight: 700; line-height: 1.25; }}
+.hdr .chip span {{ display: block; font-weight: 500; color: {TEXT_MUTED}; }}
+.hdr .chip.off {{ background: {NODATA_BG}; color: {NODATA_BORDER}; }}
 
-/* Typography */
-.hero-title {{
-  font-family: 'Space Grotesk', sans-serif;
-  font-weight: 700;
-  color: {TEXT_MAIN};
-  font-size: clamp(2.2rem, 4.5vw, 3.4rem);
-  line-height: 1.08;
-  letter-spacing: -0.035em;
-  margin: 18px 0 12px;
-}}
-.hero-subtitle {{
-  color: {TEXT_MUTED};
-  font-size: 1.05rem;
-  line-height: 1.55;
-  max-width: 32em;
-  margin-bottom: 24px;
-}}
-.section-label {{
-  font-size: 0.82rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: {TEXT_MUTED};
-  margin-bottom: 10px;
-}}
+/* ---------- aisle bar ---------- */
+.st-key-aislebar {{ background: {BG_CARD}; border: 1px solid {BORDER}; border-radius: 14px;
+                   padding: 8px 10px; margin-bottom: 18px; }}
+.st-key-aislebar [data-testid="stHorizontalBlock"] {{ gap: 6px; align-items: center; }}
+.aisle-label {{ background: {GREEN}; color: white; font-weight: 700; border-radius: 9px;
+               padding: 9px 12px; font-size: .9rem; text-align: center; white-space: nowrap; }}
+.st-key-aislebar .stButton > button {{ background: transparent; border: none; box-shadow: none;
+  color: {TEXT}; font-weight: 600; padding: 8px 4px; min-height: 0; }}
+.st-key-aislebar .stButton > button:hover {{ color: {GREEN}; background: {GREEN_SOFT}; }}
+.st-key-aislebar .stButton > button p {{ font-size: .88rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
 
-/* Shopping list interactive cards */
-.st-key-shoplist .stButton > button {{
-  width: 100%;
-  background: {BG_CARD};
-  border: 1px solid {BORDER_MAIN};
-  border-radius: 12px;
-  padding: 13px 18px;
-  margin-bottom: 8px;
-  color: {TEXT_MAIN};
-  text-align: left;
-  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
-  box-shadow: 0 1px 3px rgba(0,0,0,0.02);
-}}
-.st-key-shoplist .stButton > button:hover {{
-  border-color: {LEAF};
-  background: {BG_CARD_SUBTLE};
-  transform: translateY(-1px);
-  box-shadow: 0 3px 10px rgba(0,0,0,0.05);
-}}
-.st-key-shoplist .stButton > button > div,
-.st-key-shoplist .stButton > button [data-testid="stMarkdownContainer"] {{
-  justify-content: flex-start !important;
-  text-align: left !important;
-  width: 100%;
-}}
-.st-key-shoplist .stButton > button p {{
-  font-size: 0.98rem;
-  font-weight: 500;
-  line-height: 1.35;
-  margin: 0;
-}}
+/* ---------- quick-question tiles ---------- */
+.st-key-tiles .stButton > button {{ width: 100%; min-height: 78px; border-radius: 14px;
+  border: 1px solid {BORDER}; background: {BG_CARD}; color: {TEXT}; box-shadow: none; padding: 12px 14px; }}
+.st-key-tiles .stButton > button p {{ font-weight: 800; font-size: .95rem; line-height: 1.25;
+  white-space: normal !important; text-align: center; }}
+.st-key-tiles .stButton > button:hover {{ border-color: {GREEN}; color: {GREEN_DEEP}; }}
+.st-key-tile0 .stButton > button {{ background: {TILE_DARK}; color: {TILE_TEXT}; border-color: {TILE_DARK}; }}
+.st-key-tile0 .stButton > button:hover {{ color: {TILE_TEXT}; filter: brightness(1.12); }}
 
-/* Shelf aesthetic */
-.shelf {{
-  position: relative;
-  background: {BG_CARD_SUBTLE};
-  border: 1px solid {BORDER_MAIN};
-  border-radius: 20px;
-  padding: 24px 20px 20px;
-  margin-top: 14px;
-  overflow: hidden;
-}}
-.shelf .rail {{
-  height: 8px;
-  border-radius: 4px;
-  background: {RAIL_BG};
-  margin: 0 -4px;
-}}
-.shelf .hang {{
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
-}}
-.shelf .slot {{
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}}
-.shelf .string {{
-  width: 2px;
-  height: 34px;
-  background: {TAG_STRING};
-}}
-.shelf .slot:nth-child(2) .string {{ height: 68px; }}
-.shelf .slot:nth-child(3) .string {{ height: 48px; }}
-.shelf .slot:nth-child(1) .tag {{ transform: rotate(-2.5deg); }}
-.shelf .slot:nth-child(3) .tag {{ transform: rotate(2deg); }}
+/* ---------- section panel (like a store shelf row) ---------- */
+.panel-head {{ display: flex; align-items: baseline; justify-content: space-between; margin: 22px 0 10px; }}
+.panel-head h3 {{ font-size: 1.35rem; font-weight: 800; color: {TEXT}; margin: 0; padding: 0; }}
+.panel-head span {{ color: {TEXT_MUTED}; font-size: .85rem; }}
 
-/* Price Tag Card Design */
-.tag {{
-  position: relative;
-  background: {TAG_BG};
-  border: 1px solid {TAG_BORDER};
-  border-radius: 12px;
-  padding: 22px 14px 14px;
-  box-shadow: 0 3px 8px rgba(0,0,0,0.03);
-  transition: transform 0.2s ease;
-}}
-.tag::before {{
-  content: "";
-  position: absolute;
-  left: 50%;
-  top: 8px;
-  width: 8px;
-  height: 8px;
-  transform: translateX(-50%);
-  border-radius: 50%;
-  background: {BG_CARD_SUBTLE};
-  border: 1px solid {BORDER_MAIN};
-}}
-/* product illustration tile (dataset has no photos; see product_art.py) */
-.tag .art {{
-  height: 72px;
-  border-radius: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 2.3rem;
-  line-height: 1;
-  margin-bottom: 10px;
-}}
-.shelf .tag .art {{ height: 60px; font-size: 1.9rem; }}
-.tag .name {{
-  font-weight: 600;
-  color: {TEXT_MAIN};
-  font-size: 0.88rem;
-  line-height: 1.3;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}}
-.tag .brand-l {{
-  color: {TEXT_MUTED};
-  font-size: 0.76rem;
-  margin-top: 3px;
-}}
-.tag .row {{
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 6px;
-  margin-top: 10px;
-  flex-wrap: wrap;
-}}
-.tag .price {{
-  font-family: 'Space Grotesk', sans-serif;
-  font-weight: 700;
-  font-size: 1.18rem;
-  color: {HALDI_TEXT};
-  background: {HALDI};
-  padding: 1px 7px;
-  border-radius: 6px;
-}}
-.tag .match {{
-  font-size: 0.74rem;
-  font-weight: 600;
-  color: {LEAF};
-}}
-.tag .n {{
-  position: absolute;
-  top: 6px;
-  left: 8px;
-  font-size: 0.72rem;
-  font-weight: 700;
-  color: {TEXT_MUTED};
-}}
-.tag details {{
-  margin-top: 8px;
-  font-size: 0.8rem;
-  color: {TEXT_MUTED};
-}}
-.tag summary {{
-  cursor: pointer;
-  color: {LEAF};
-  font-weight: 600;
-}}
-.tags {{
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 12px;
-  padding: 6px 2px;
-}}
+/* ---------- product card ---------- */
+.pcard {{ position: relative; background: {BG_CARD}; border: 1px solid {BORDER};
+         border-radius: 14px; padding: 10px 10px 12px; }}
+.pcard .img {{ position: relative; aspect-ratio: 4 / 3; border-radius: 10px; border: 1px solid {BORDER_SOFT};
+              display: flex; align-items: center; justify-content: center; font-size: 3.6rem; line-height: 1; }}
+.pcard .badge {{ position: absolute; top: 0; left: 0; background: {BADGE_BG}; color: {BADGE_TEXT};
+                font-size: .72rem; font-weight: 800; padding: 4px 9px; border-radius: 10px 0 10px 0; }}
+.pcard .rank {{ position: absolute; top: 8px; right: 8px; background: {BG_CARD}; color: {TEXT_MUTED};
+               border: 1px solid {BORDER}; font-size: .7rem; font-weight: 700; padding: 1px 7px; border-radius: 999px; }}
+.pcard .meta {{ display: flex; justify-content: space-between; align-items: center; margin-top: 10px; gap: 6px; }}
+.pcard .brand {{ color: {TEXT_MUTED}; font-size: .8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+.pcard .rating {{ flex: none; font-size: .72rem; font-weight: 700; color: {GREEN_DEEP}; background: {GREEN_SOFT};
+                 padding: 1px 7px; border-radius: 999px; }}
+.pcard .pname {{ color: {TEXT}; font-weight: 600; font-size: .95rem; line-height: 1.3; margin-top: 3px;
+                min-height: 2.6em; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }}
+.pcard .size {{ margin-top: 8px; font-size: .78rem; color: {TEXT_MUTED}; background: {BG_SOFT};
+               border-radius: 7px; padding: 5px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+.pcard .prow {{ display: flex; align-items: baseline; gap: 7px; margin-top: 9px; flex-wrap: wrap; }}
+.pcard .price {{ font-weight: 800; font-size: 1.2rem; color: {TEXT}; }}
+.pcard .mrp {{ font-size: .82rem; color: {TEXT_MUTED}; text-decoration: line-through; }}
+.pcard .match {{ margin-left: auto; font-size: .72rem; font-weight: 700; color: {GREEN}; }}
+.pcard details {{ margin-top: 8px; font-size: .8rem; color: {TEXT_MUTED}; line-height: 1.45; }}
+.pcard summary {{ cursor: pointer; color: {GREEN}; font-weight: 700; }}
+.pgrid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; margin: 8px 0 4px; }}
 
-/* Aisles Navigation */
-.aisles-container {{
-  margin-top: 36px;
-  padding-top: 24px;
-  border-top: 1px solid {BORDER_MUTED};
-}}
-.st-key-aisles .stButton > button {{
-  width: 100%;
-  border: 1px solid {BORDER_MAIN};
-  background: {BG_CARD};
-  border-radius: 12px;
-  padding: 12px 14px;
-  min-height: 60px;
-  color: {TEXT_MAIN};
-  box-shadow: 0 1px 2px rgba(0,0,0,0.02);
-  transition: all 0.16s ease;
-}}
-.st-key-aisles .stButton > button:hover {{
-  border-color: {LEAF};
-  background: {BG_CARD_SUBTLE};
-  transform: translateY(-1px);
-}}
-.st-key-aisles .stButton > button p {{
-  font-size: 0.88rem;
-  font-weight: 600;
-  line-height: 1.25;
-  margin: 0;
-}}
+/* "Ask about this" button under featured cards */
+.st-key-featured .stButton > button {{ width: 100%; border: 1.5px solid {GREEN}; color: {GREEN};
+  background: {BG_CARD}; font-weight: 700; border-radius: 10px; margin-top: -4px; }}
+.st-key-featured .stButton > button:hover {{ background: {GREEN}; color: white; }}
 
-/* Chat Area Styling */
-.st-key-chat {{
-  max-width: 820px;
-  margin: 0 auto;
-}}
-[data-testid="stChatMessage"] {{
-  background: transparent;
-  padding: 10px 0;
-}}
-[data-testid="stChatMessageContent"] {{
-  border-radius: 14px;
-  padding: 14px 18px;
-  font-size: 1rem;
-  line-height: 1.6;
-  border: 1px solid {BORDER_MUTED};
-  color: {TEXT_MAIN} !important;
-}}
-[data-testid="stChatMessageContent"] * {{
-  color: {TEXT_MAIN} !important;
-}}
-[data-testid="stChatMessageContent"][data-testid*="user"] {{
-  background-color: {CHAT_USER_BG} !important;
-}}
-[data-testid="stChatMessageContent"][data-testid*="assistant"] {{
-  background-color: {CHAT_BOT_BG} !important;
-}}
+/* ---------- chat ---------- */
+.st-key-chat {{ max-width: 960px; margin: 0 auto; }}
+[data-testid="stChatMessage"] {{ background: {BG_CARD}; border: 1px solid {BORDER}; border-radius: 16px;
+  padding: 14px 16px; margin-bottom: 10px; }}
+[data-testid="stChatMessageContent"] p {{ font-size: 1rem; line-height: 1.6; color: {TEXT}; }}
+[data-testid="stChatInput"] {{ border: 2px solid {GREEN}; border-radius: 14px; background: {BG_CARD}; }}
+[data-testid="stBottomBlockContainer"] {{ max-width: 980px; background: {BG_PAGE}; }}
+.answer-head {{ font-size: .8rem; font-weight: 700; color: {TEXT_MUTED}; margin: 14px 0 2px; }}
+.pills {{ display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; font-size: .74rem; }}
+.pills span {{ background: {BG_SOFT}; color: {TEXT_MUTED}; border: 1px solid {BORDER_SOFT};
+              padding: 2px 8px; border-radius: 999px; }}
+.pills span.hl {{ background: {GREEN_SOFT}; color: {GREEN_DEEP}; font-weight: 700; border-color: {GREEN_SOFT}; }}
+.nodata {{ border-left: 4px solid {NODATA_BORDER}; background: {NODATA_BG}; color: {NODATA_TEXT};
+          padding: 12px 16px; border-radius: 4px 12px 12px 4px; }}
 
-/* Streamlit Expander styling in dark mode */
-[data-testid="stExpander"] {{
-  background-color: {BG_CARD} !important;
-  border: 1px solid {BORDER_MAIN} !important;
-  border-radius: 12px !important;
-}}
-[data-testid="stExpander"] details {{
-  background-color: {BG_CARD} !important;
-}}
-[data-testid="stExpander"] summary {{
-  color: {TEXT_MAIN} !important;
-}}
-[data-testid="stExpander"] summary p,
-[data-testid="stExpander"] summary span {{
-  color: {TEXT_MAIN} !important;
-}}
-[data-testid="stExpander"] [data-testid="stMarkdownContainer"] p {{
-  color: {TEXT_MAIN} !important;
-}}
+/* ---------- sidebar ---------- */
+section[data-testid="stSidebar"] {{ background: {BG_SIDEBAR}; border-right: 1px solid {BORDER}; }}
+section[data-testid="stSidebar"] h3 {{ color: {GREEN_DEEP}; font-weight: 800; }}
+.key-ok {{ color: {GREEN}; font-size: .85rem; font-weight: 600; }}
+.key-bad {{ color: {NODATA_BORDER}; font-size: .85rem; font-weight: 600; }}
+.facts {{ font-size: .82rem; color: {TEXT_MUTED}; line-height: 1.7; }}
 
-/* ==========================================================================
-   CHAT INPUT SYSTEM (All Streamlit container, shadow & sub-element overrides)
-   ========================================================================== */
-footer {{ visibility: hidden !important; display: none !important; }}
-
-/* Bottom fixed docked area */
-[data-testid="stBottom"],
-[data-testid="stBottomBlockContainer"],
-footer[data-testid="stBottom"] {{
-  background-color: {BG_PAGE} !important;
-  background: {BG_PAGE} !important;
-}}
-
-[data-testid="stBottomBlockContainer"] * {{
-  box-sizing: border-box;
-}}
-
-/* Target every parent container and shadow around stChatInput */
-[data-testid="stChatInput"],
-[data-testid="stChatInputContainer"],
-div[data-testid="stChatInput"] > div,
-div[data-testid="stChatInput"] > div > div {{
-  background-color: {BG_CARD} !important;
-  background: {BG_CARD} !important;
-  border-radius: 16px !important;
-}}
-
-[data-testid="stChatInput"] {{
-  border: 1.5px solid {CHAT_INPUT_BORDER} !important;
-  box-shadow: 0 4px 18px rgba(0,0,0,{'0.4' if dark else '0.04'}) !important;
-}}
-
-[data-testid="stChatInput"]:focus-within {{
-  border-color: {LEAF} !important;
-  box-shadow: 0 0 0 2px rgba(66, 147, 57, 0.25) !important;
-}}
-
-/* Inner textarea styling */
-[data-testid="stChatInput"] textarea,
-[data-testid="stChatInputContainer"] textarea,
-div[data-testid="stChatInput"] textarea,
-div[data-baseweb="textarea"],
-div[data-baseweb="base-input"] {{
-  background-color: {BG_CARD} !important;
-  background: {BG_CARD} !important;
-  color: {TEXT_MAIN} !important;
-  -webkit-text-fill-color: {TEXT_MAIN} !important;
-  caret-color: {LEAF} !important;
-  font-size: 0.98rem !important;
-  line-height: 1.5 !important;
-}}
-
-[data-testid="stChatInput"] textarea::placeholder,
-div[data-baseweb="textarea"] textarea::placeholder {{
-  color: {TEXT_MUTED} !important;
-  -webkit-text-fill-color: {TEXT_MUTED} !important;
-  opacity: 0.8 !important;
-}}
-
-/* Submit button styling */
-[data-testid="stChatInput"] button,
-[data-testid="stChatInputSubmitButton"] {{
-  color: {LEAF} !important;
-  fill: {LEAF} !important;
-  background: transparent !important;
-  border: none !important;
-}}
-[data-testid="stChatInput"] button svg,
-[data-testid="stChatInputSubmitButton"] svg {{
-  fill: {LEAF} !important;
-  color: {LEAF} !important;
-}}
-[data-testid="stChatInput"] button:hover svg {{
-  fill: {TEXT_MAIN} !important;
-}}
-
-/* Alerts */
-.nodata {{
-  border-left: 4px solid {NODATA_BORDER};
-  background: {NODATA_BG};
-  padding: 12px 16px;
-  border-radius: 4px 12px 12px 4px;
-  color: {NODATA_TEXT};
-  font-size: 0.95rem;
-}}
-.nodata b {{ color: {NODATA_BORDER}; }}
-
-/* Sidebar refinement */
-section[data-testid="stSidebar"] {{
-  background: {BG_SIDEBAR};
-  border-right: 1px solid {BORDER_MUTED};
-}}
-section[data-testid="stSidebar"] h3 {{
-  font-family: 'Space Grotesk', sans-serif;
-  color: {LEAF};
-  font-size: 1.15rem;
-  margin-bottom: 12px;
-}}
-.key-ok {{ color: {LEAF}; font-size: 0.84rem; font-weight: 600; }}
-.key-bad {{ color: #D94025; font-size: 0.84rem; font-weight: 600; }}
-.facts {{ font-size: 0.84rem; color: {TEXT_MUTED}; line-height: 1.65; }}
-
-/* Compact custom toggle bar */
-.toggle-bar {{
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 6px 12px;
-  border-radius: 10px;
-  background: {BG_CARD};
-  border: 1px solid {BORDER_MAIN};
-  margin-bottom: 18px;
-}}
+.footnote {{ text-align: center; color: {TEXT_MUTED}; font-size: .78rem; margin-top: 28px; }}
+.stButton > button:focus-visible {{ outline: 2px solid {GREEN}; outline-offset: 2px; }}
 
 @media (max-width: 760px) {{
-  .shelf {{ display: none; }}
+  .hdr .askbox {{ display: none; }}
+  .hdr {{ flex-wrap: wrap; }}
 }}
 </style>
 """, unsafe_allow_html=True)
@@ -572,9 +201,15 @@ aisles = Counter(m["category"] for m in product_metas).most_common(8)
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
-if "shelf" not in st.session_state:
-    pool = [m for m in product_metas if 0 < m.get("price", 0) < 1500 and len(m.get("product", "")) < 48]
-    st.session_state.shelf = random.sample(pool, 3) if len(pool) >= 3 else pool[:3]
+if "featured" not in st.session_state:
+    # 4 real products for the opening screen, with their chunk text (for MRP,
+    # rating and type). Prefer discounted items so the cards show a badge.
+    pool = [(m, t) for m, t in zip(pipeline.metas, pipeline.texts)
+            if m.get("source") == "BigBasket Catalogue" and m.get("chunk") == 0
+            and 0 < m.get("price", 0) < 1500 and len(m.get("product", "")) < 48]
+    deals = [p for p in pool if "% off" in p[1]]
+    pick_from = deals if len(deals) >= 4 else pool
+    st.session_state.featured = random.sample(pick_from, 4) if len(pick_from) >= 4 else pick_from[:4]
 
 # ---------------------------------------------------------------------------
 # SIDEBAR
@@ -663,47 +298,79 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 # UI HELPERS
 # ---------------------------------------------------------------------------
-def tag_html(m, n=None, match=None, desc=None, sub_category="", ptype=""):
-    price = f"₹{m['price']:,.0f}" if m.get("price", -1) >= 0 else "Policy"
-    # Illustration picked from type / sub-category / name (product_art.py)
-    emoji, tint = pick_art(m.get("product", ""), m.get("category", ""), sub_category, ptype)
-    label = html.escape(ptype or sub_category or m.get("category", "") or "Product")
-    parts = ['<div class="tag">']
-    if n is not None:
-        parts.append(f'<span class="n">#{n}</span>')
-    parts.append(f'<div class="art" style="background:{tint}" role="img" aria-label="{label}">{emoji}</div>')
-    parts.append(f'<div class="name">{html.escape(m.get("product", "Unknown"))}</div>')
-    parts.append(f'<div class="brand-l">{html.escape(m.get("brand", "Unknown"))}</div>')
-    parts.append(f'<div class="row"><span class="price">{price}</span>')
+import re as _re
+
+
+def parse_card_facts(text):
+    """Read MRP and rating out of a chunk's header lines.
+    The header (built in rag.py row_to_header) looks like:
+      Price: ₹190 (MRP ₹250, 24% off)
+      Rating: 4.2/5
+    Stored metadata only has the sale price, so we read the rest from text."""
+    mrp = _re.search(r"MRP ₹([\d,]+)", text or "")
+    rating = _re.search(r"Rating:\s*([\d.]+)/5", text or "")
+    mrp_val = float(mrp.group(1).replace(",", "")) if mrp else None
+    return mrp_val, (float(rating.group(1)) if rating else None)
+
+
+def card_html(m, text="", rank=None, match=None, show_desc=False):
+    """One store-style product card (picture, badge, brand, name, price, MRP)."""
+    sub, ptype = parse_header(text)
+    emoji, tint = pick_art(m.get("product", ""), m.get("category", ""), sub, ptype)
+    label = html.escape(ptype or sub or m.get("category", "") or "Product")
+    price = m.get("price", -1)
+    mrp, rating = parse_card_facts(text)
+
+    is_policy = price is None or price < 0
+    badge = ""
+    if not is_policy and mrp and mrp > price > 0:
+        badge = f'<span class="badge">{round((mrp - price) / mrp * 100)}% OFF</span>'
+
+    parts = ['<div class="pcard">',
+             f'<div class="img" style="background:{tint}" role="img" aria-label="{label}">{badge}{emoji}',
+             (f'<span class="rank">#{rank}</span>' if rank else ''), '</div>',
+             '<div class="meta">',
+             f'<span class="brand">{html.escape(m.get("brand", ""))}</span>',
+             (f'<span class="rating">★ {rating:.1f}</span>' if rating else ''), '</div>',
+             f'<div class="pname">{html.escape(m.get("product", "Unknown"))}</div>',
+             f'<div class="size">{label}</div>',
+             '<div class="prow">']
+    if is_policy:
+        parts.append('<span class="price">Policy</span>')
+    else:
+        parts.append(f'<span class="price">₹{price:,.0f}</span>')
+        if mrp and mrp > price:
+            parts.append(f'<span class="mrp">₹{mrp:,.0f}</span>')
     if match:
         parts.append(f'<span class="match">{match}</span>')
     parts.append('</div>')
-    if desc:
-        short = html.escape(desc[:280]) + ("…" if len(desc) > 280 else "")
-        parts.append(f'<details><summary>Details</summary>{short}</details>')
+    if show_desc:
+        desc = (text or "").split("Description:", 1)[-1].strip()
+        if desc:
+            short = html.escape(desc[:280]) + ("…" if len(desc) > 280 else "")
+            parts.append(f'<details><summary>Description</summary>{short}</details>')
     parts.append('</div>')
     return "".join(parts)
 
 
-def render_tags(chunks, best_sim):
-    tags = []
+def render_products(chunks, best_sim):
+    """Retrieved products shown as store cards right under the answer.
+    WHY visible: the brief asks to check that retrieved chunks contain the
+    evidence — this makes retrieval part of the demo."""
+    cards = []
     for n, c in enumerate(chunks, 1):
         sim = c.get("similarity") or c.get("similarity_score") or c.get("score")
-        match = (f"{sim:.0%} match" if sim is not None else "word match")
-        content = c.get("text") or c.get("content", "")
-        desc = content.split("Description:", 1)[-1].strip()
-        sub, ptype = parse_header(content)   # read from the chunk's header lines
-        tags.append(tag_html(c["metadata"], n=n, match=match, desc=desc,
-                             sub_category=sub, ptype=ptype))
-    with st.expander(f"Retrieved Catalogue Evidence ({len(chunks)} items, top match {best_sim:.0%})", expanded=False):
-        st.markdown(f'<div class="tags">{"".join(tags)}</div>', unsafe_allow_html=True)
+        match = f"{sim:.0%} match" if sim is not None else "word match"
+        text = c.get("text") or c.get("content", "")
+        cards.append(card_html(c["metadata"], text, rank=n, match=match, show_desc=True))
+    st.markdown(f'<div class="answer-head">Products used for this answer '
+                f'(closest match {best_sim:.0%})</div><div class="pgrid">{"".join(cards)}</div>',
+                unsafe_allow_html=True)
 
 
 def render_nodata():
-    st.markdown(
-        f'<div class="nodata"><b>Out of Catalogue Bounds.</b> {html.escape(FALLBACK_MSG)}</div>',
-        unsafe_allow_html=True,
-    )
+    st.markdown(f'<div class="nodata"><b>Not in the catalogue.</b> {html.escape(FALLBACK_MSG)}</div>',
+                unsafe_allow_html=True)
 
 
 def ask(q):
@@ -712,94 +379,113 @@ def ask(q):
 
 
 AVATARS = {"user": "🙂", "assistant": "🧺"}
-AISLE_ICONS = {
-    "Beauty & Hygiene": "🧴", "Gourmet & World Food": "🫒", "Snacks & Branded Foods": "🍪",
-    "Foodgrains, Oil & Masala": "🌾", "Cleaning & Household": "🧽", "Kitchen, Garden & Pets": "🍳",
-    "Bakery, Cakes & Dairy": "🥛", "Beverages": "☕", "Baby Care": "🍼",
-    "Fruits & Vegetables": "🥕", "Eggs, Meat & Fish": "🥚",
+AISLE_SHORT = {
+    "Beauty & Hygiene": "Beauty", "Gourmet & World Food": "Gourmet",
+    "Snacks & Branded Foods": "Snacks", "Foodgrains, Oil & Masala": "Staples",
+    "Cleaning & Household": "Household", "Kitchen, Garden & Pets": "Kitchen",
+    "Bakery, Cakes & Dairy": "Bakery & Dairy", "Beverages": "Beverages",
+    "Baby Care": "Baby Care", "Fruits & Vegetables": "Fruits & Veg", "Eggs, Meat & Fish": "Eggs & Meat",
 }
 
-# Top Navigation Bar
+# ---------------------------------------------------------------------------
+# HEADER BAR
+# ---------------------------------------------------------------------------
+groq_k, gemini_k = get_api_keys()
+if groq_k:
+    chip = '<div class="chip">⚡ Groq connected<span>gpt-oss-20b</span></div>'
+elif gemini_k:
+    chip = '<div class="chip">⚡ Gemini connected<span>fallback model</span></div>'
+else:
+    chip = '<div class="chip off">Add an API key<span>in the sidebar</span></div>'
+
 st.markdown(f"""
-<div class="top-nav">
-  <div class="brand">
-    <span class="mark">🧺</span>
-    BigBasket Assistant
+<div class="hdr">
+  <div class="logo">🧺</div>
+  <div>
+    <div class="title">Basket Assistant</div>
+    <div class="sub">AI shopping help built on the BigBasket catalogue dataset</div>
   </div>
-  <div class="status-pill">
-    {"🌙 Dark Mode" if dark else "☀️ Light Mode"} · RAG Active
-  </div>
+  <div class="askbox">Ask about any of {n_products:,} products below</div>
+  {chip}
 </div>
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
-# OPENING SCREEN (Empty State)
+# AISLE BAR (real categories from the data; click = ask about that aisle)
 # ---------------------------------------------------------------------------
-SUGGESTIONS = [
-    ("Which face wash suits oily skin, and what does it cost?", "Natural language beauty & hygiene query"),
-    ("Compare Saffola Gold and Fortune Sunflower oil", "Multi-brand comparison query"),
-    ("Suggest a healthy breakfast cereal under ₹300", "Price-filtered query"),
-    ("What is BigBasket's return policy for spoiled food items?", "Policy & FAQ retrieval query"),
+with st.container(key="aislebar"):
+    cols = st.columns([1.35] + [1] * 6)
+    cols[0].markdown('<div class="aisle-label">Shop by aisle</div>', unsafe_allow_html=True)
+    for i, (cat, count) in enumerate(aisles[:6]):
+        if cols[i + 1].button(AISLE_SHORT.get(cat, cat), key=f"aisle{i}", help=f"{cat}: {count:,} products",
+                              use_container_width=True):
+            ask(f"What are some popular {cat} products under ₹250?")
+
+# ---------------------------------------------------------------------------
+# OPENING SCREEN (only while the chat is empty)
+# ---------------------------------------------------------------------------
+TILES = [
+    "Breakfast cereal under ₹300",
+    "Compare Saffola Gold and Fortune oil",
+    "Face wash for oily skin, with price",
+    "Return policy for spoiled food",
+]
+TILE_QUESTIONS = [
+    "Suggest a healthy breakfast cereal under ₹300",
+    "Compare Saffola Gold and Fortune Sunflower oil",
+    "Which face wash suits oily skin, and what does it cost?",
+    "What is BigBasket's return policy for spoiled food items?",
 ]
 
 if not st.session_state.messages:
-    left, right = st.columns([1.1, 1], gap="large")
+    with st.container(key="tiles"):
+        tcols = st.columns(4)
+        for i, label in enumerate(TILES):
+            with tcols[i].container(key=f"tile{i}"):
+                if st.button(label, key=f"tilebtn{i}", use_container_width=True):
+                    ask(TILE_QUESTIONS[i])
 
-    with left:
-        st.markdown('<div class="hero-title">What groceries are on your list?</div>', unsafe_allow_html=True)
-        st.markdown(
-            '<div class="hero-subtitle">Ask questions about prices, ingredients, brands, or BigBasket policies. '
-            'Every recommendation is verified against the catalogue dataset.</div>',
-            unsafe_allow_html=True,
-        )
-        st.markdown('<div class="section-label">Try an example query</div>', unsafe_allow_html=True)
-        with st.container(key="shoplist"):
-            for i, (q, hint) in enumerate(SUGGESTIONS):
-                if st.button(f"→  {q}", key=f"sugg{i}", use_container_width=True):
-                    ask(q)
+    st.markdown(f'<div class="panel-head"><h3>From the catalogue</h3>'
+                f'<span>4 of {n_products:,} products the assistant can search</span></div>',
+                unsafe_allow_html=True)
+    with st.container(key="featured"):
+        fcols = st.columns(4)
+        for i, (m, text) in enumerate(st.session_state.featured):
+            with fcols[i]:
+                st.markdown(card_html(m, text), unsafe_allow_html=True)
+                if st.button("Ask about this", key=f"feat{i}", use_container_width=True):
+                    ask(f"Tell me about {m.get('product')} by {m.get('brand')}: what is it, "
+                        f"what does it cost, and are there similar options?")
 
-    with right:
-        slots = "".join(f'<div class="slot"><div class="string"></div>{tag_html(m)}</div>' for m in st.session_state.shelf)
-        st.markdown(
-            f"""
-        <div class="shelf">
-          <div class="rail"></div>
-          <div class="hang">{slots}</div>
-        </div>""",
-            unsafe_allow_html=True,
-        )
-
-    with st.container(key="aisles"):
-        st.markdown('<div class="aisles-container">', unsafe_allow_html=True)
-        st.markdown('<div class="section-label">Browse by category aisle</div>', unsafe_allow_html=True)
-        cols = st.columns(4)
-        for i, (cat, count) in enumerate(aisles):
-            label = f"{AISLE_ICONS.get(cat, '🛒')} {cat} ({count:,})"
-            if cols[i % 4].button(label, key=f"aisle{i}", use_container_width=True):
-                ask(f"What are popular {cat} items under ₹250?")
-        st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('<div class="footnote">Student project built on the public Kaggle BigBasket product '
+                'dataset (2022 snapshot). Not affiliated with BigBasket. Prices come from the dataset, '
+                'not the live store.</div>', unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
 # CHAT CONVERSATION
 # ---------------------------------------------------------------------------
-question = st.chat_input("Ask about grocery products, brands, or return policies...")
+question = st.chat_input("Search or ask: products, brands, prices or return policies")
 if not question:
     question = st.session_state.pop("pending_question", None)
 
 with st.container(key="chat"):
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"], avatar=AVATARS[msg["role"]]):
-            if msg.get("fallback"):
+            if msg.get("pills"):
+                st.markdown(msg["pills"], unsafe_allow_html=True)
+            if msg.get("guardrail"):
+                st.markdown(f'<div class="nodata"><b>Outside what I can help with.</b> '
+                            f'{html.escape(msg["content"])}</div>', unsafe_allow_html=True)
+            elif msg.get("fallback"):
                 render_nodata()
             else:
                 st.markdown(msg["content"])
             if msg["role"] == "assistant" and show_ctx and msg.get("chunks"):
-                render_tags(msg["chunks"], msg.get("best_sim", 0.0))
+                render_products(msg["chunks"], msg.get("best_sim", 0.0))
 
     if question:
-        groq_k, gemini_k = get_api_keys()
         if not groq_k and not gemini_k:
-            st.warning("Please provide a Groq or Gemini API key in the sidebar.", icon="🔑")
+            st.warning("Add a Groq or Gemini API key in the sidebar to get answers.", icon="🔑")
             st.stop()
 
         st.session_state.messages.append({"role": "user", "content": question})
@@ -807,7 +493,7 @@ with st.container(key="chat"):
             st.markdown(question)
 
         with st.chat_message("assistant", avatar=AVATARS["assistant"]):
-            with st.spinner("Searching product catalogue and grounding answer..."):
+            with st.spinner("Searching the catalogue..."):
                 try:
                     result = pipeline.answer(
                         question,
@@ -821,62 +507,50 @@ with st.container(key="chat"):
                     )
                 except Exception as e:
                     st.session_state.messages.pop()
-                    st.error(f"Search retrieval error: {e}")
+                    st.error(f"Couldn't get an answer: {e}")
                     st.stop()
 
             content = result["answer"]
-            latency_txt = f"{result.get('latency_ms', 0):.0f}ms"
-            flow_txt = result.get("flow", "hybrid_rerank")
             cached_flag = result.get("cached", False)
-
-            # Metadata Pill / Metrics Badge
-            telemetry_badge = f"""
-            <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px; flex-wrap:wrap; font-size:0.78rem;">
-                <span style="background:{'#243322' if dark else '#E4EFE0'}; color:{LEAF}; padding:2px 8px; border-radius:6px; font-weight:600;">
-                    ⏱ {latency_txt}
-                </span>
-                <span style="background:{'#1F281E' if dark else '#EEF4E8'}; color:{TEXT_MUTED}; padding:2px 8px; border-radius:6px; border:1px solid {BORDER_MUTED};">
-                    Flow: {flow_txt}
-                </span>
-                <span style="background:{'#1F281E' if dark else '#EEF4E8'}; color:{TEXT_MUTED}; padding:2px 8px; border-radius:6px; border:1px solid {BORDER_MUTED};">
-                    Cache: {'⚡ HIT' if cached_flag else 'MISS'}
-                </span>
-                <span style="background:{'#1F281E' if dark else '#EEF4E8'}; color:{TEXT_MUTED}; padding:2px 8px; border-radius:6px; border:1px solid {BORDER_MUTED};">
-                    Confidence: {result.get('confidence_score', 0):.0%}
-                </span>
-            </div>
-            """
-            st.markdown(telemetry_badge, unsafe_allow_html=True)
+            pills = (
+                '<div class="pills">'
+                f'<span class="hl">⏱ {result.get("latency_ms", 0):.0f} ms</span>'
+                f'<span>Flow: {html.escape(str(result.get("flow", "hybrid_rerank")))}</span>'
+                f'<span>Cache: {"hit" if cached_flag else "miss"}</span>'
+                f'<span>Confidence: {result.get("confidence_score", 0):.0%}</span>'
+                '</div>'
+            )
+            st.markdown(pills, unsafe_allow_html=True)
 
             if result.get("guardrail"):
-                st.markdown(f'<div class="nodata"><b>Policy Guardrail:</b> {html.escape(content)}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="nodata"><b>Outside what I can help with.</b> '
+                            f'{html.escape(content)}</div>', unsafe_allow_html=True)
             elif result.get("fallback"):
                 render_nodata()
             else:
                 if result.get("decomposed") and len(result.get("sub_queries", [])) > 1:
-                    sq_tags = ", ".join(f'"{q}"' for q in result["sub_queries"])
-                    st.caption(f"🔍 Decomposed sub-queries: {sq_tags}")
+                    st.caption("Split into: " + ", ".join(f'"{q}"' for q in result["sub_queries"]))
                 st.markdown(content)
 
             if show_ctx and result.get("chunks"):
-                render_tags(result["chunks"], result.get("best_sim", 0.0))
+                render_products(result["chunks"], result.get("best_sim", 0.0))
 
-            # Audit Inspection Expander
-            with st.expander("🔍 Backend Audit Log & Chunk Telemetry", expanded=False):
+            with st.expander("Backend audit log", expanded=False):
                 st.json(result.get("audit_entry", {
                     "latency_ms": result.get("latency_ms"),
                     "cached": cached_flag,
-                    "flow": flow_txt,
+                    "flow": result.get("flow"),
                     "confidence_score": result.get("confidence_score"),
-                    "chunks": [c.get("metadata", {}).get("product") for c in result.get("chunks", [])]
+                    "chunks": [c.get("metadata", {}).get("product") for c in result.get("chunks", [])],
                 }))
 
         st.session_state.messages.append({
             "role": "assistant",
             "content": content,
+            "pills": pills,
             "fallback": result.get("fallback", False),
             "guardrail": result.get("guardrail", False),
-            "cached": result.get("cached", False),
+            "cached": cached_flag,
             "chunks": result.get("chunks", []),
             "best_sim": result.get("best_sim", 0.0),
         })
