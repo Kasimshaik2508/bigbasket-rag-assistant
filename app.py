@@ -16,6 +16,7 @@ from collections import Counter
 
 import streamlit as st
 
+from image_lookup import lookup_many
 from product_art import parse_header, pick_art
 
 from rag import FALLBACK_MSG, GUARDRAIL_MSG, RAGPipeline, SIM_THRESHOLD, TOP_K
@@ -109,9 +110,15 @@ header[data-testid="stHeader"] {{ background: transparent; }}
          border-radius: 14px; padding: 10px 10px 12px; }}
 .pcard .img {{ position: relative; aspect-ratio: 4 / 3; border-radius: 10px; border: 1px solid {BORDER_SOFT};
               display: flex; align-items: center; justify-content: center; font-size: 3.6rem; line-height: 1; }}
-.pcard .badge {{ position: absolute; top: 0; left: 0; background: {BADGE_BG}; color: {BADGE_TEXT};
+.pcard .img.photo {{ background: #FFFFFF; overflow: hidden; }}
+.pcard .img.photo img {{ position: absolute; inset: 8px; width: calc(100% - 16px); height: calc(100% - 16px);
+                        object-fit: contain; }}
+.pcard .img.photo .emoji-under {{ opacity: .35; }}
+.pcard .img .credit {{ position: absolute; bottom: 4px; right: 6px; font-size: .58rem; color: #8A9385;
+                      background: rgba(255,255,255,.85); padding: 0 4px; border-radius: 4px; }}
+.pcard .badge {{ z-index: 2;  position: absolute; top: 0; left: 0; background: {BADGE_BG}; color: {BADGE_TEXT};
                 font-size: .72rem; font-weight: 800; padding: 4px 9px; border-radius: 10px 0 10px 0; }}
-.pcard .rank {{ position: absolute; top: 8px; right: 8px; background: {BG_CARD}; color: {TEXT_MUTED};
+.pcard .rank {{ z-index: 2; position: absolute; top: 8px; right: 8px; background: {BG_CARD}; color: {TEXT_MUTED};
                border: 1px solid {BORDER}; font-size: .7rem; font-weight: 700; padding: 1px 7px; border-radius: 999px; }}
 .pcard .meta {{ display: flex; justify-content: space-between; align-items: center; margin-top: 10px; gap: 6px; }}
 .pcard .brand {{ color: {TEXT_MUTED}; font-size: .8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
@@ -264,6 +271,8 @@ with st.sidebar:
     rerank = st.toggle("Cross-encoder re-ranking", value=True, help="Re-ranks with ms-marco-MiniLM-L-6-v2")
     decompose = st.toggle("Query decomposition", value=True, help="Splits multi-part compound queries")
     show_ctx = st.toggle("Show retrieved product tags", value=True)
+    st.toggle("Real product photos (Open Food Facts)", value=True, key="real_photos",
+              help="Looks up real pack photos by brand + name; falls back to an illustration when there's no confident match")
 
     st.divider()
     st.markdown(
@@ -315,8 +324,9 @@ def parse_card_facts(text):
     return mrp_val, (float(rating.group(1)) if rating else None)
 
 
-def card_html(m, text="", rank=None, match=None, show_desc=False):
-    """One store-style product card (picture, badge, brand, name, price, MRP)."""
+def card_html(m, text="", rank=None, match=None, show_desc=False, photo=""):
+    """One store-style product card (picture, badge, brand, name, price, MRP).
+    photo: real image URL from Open Food Facts, or "" to show the illustration."""
     sub, ptype = parse_header(text)
     emoji, tint = pick_art(m.get("product", ""), m.get("category", ""), sub, ptype)
     label = html.escape(ptype or sub or m.get("category", "") or "Product")
@@ -329,7 +339,11 @@ def card_html(m, text="", rank=None, match=None, show_desc=False):
         badge = f'<span class="badge">{round((mrp - price) / mrp * 100)}% OFF</span>'
 
     parts = ['<div class="pcard">',
-             f'<div class="img" style="background:{tint}" role="img" aria-label="{label}">{badge}{emoji}',
+             (f'<div class="img photo">{badge}<span class="emoji-under" aria-hidden="true">{emoji}</span>'
+              f'<img src="{html.escape(photo)}" alt="{html.escape(m.get("product", ""))}" loading="lazy" '
+              f'referrerpolicy="no-referrer"><span class="credit">Photo: Open Food Facts</span>'
+              if photo else
+              f'<div class="img" style="background:{tint}" role="img" aria-label="{label}">{badge}{emoji}'),
              (f'<span class="rank">#{rank}</span>' if rank else ''), '</div>',
              '<div class="meta">',
              f'<span class="brand">{html.escape(m.get("brand", ""))}</span>',
@@ -355,16 +369,27 @@ def card_html(m, text="", rank=None, match=None, show_desc=False):
     return "".join(parts)
 
 
+def card_photos(metas):
+    """Real photos for a set of cards (parallel, time-limited, cached).
+    Returns "" wherever no confident match was found -> illustration."""
+    if not st.session_state.get("real_photos", True):
+        return [""] * len(metas)
+    return lookup_many([(m.get("product", ""), m.get("brand", ""), m.get("category", ""))
+                        for m in metas])
+
+
 def render_products(chunks, best_sim):
     """Retrieved products shown as store cards right under the answer.
     WHY visible: the brief asks to check that retrieved chunks contain the
     evidence — this makes retrieval part of the demo."""
+    photos = card_photos([c["metadata"] for c in chunks])
     cards = []
     for n, c in enumerate(chunks, 1):
         sim = c.get("similarity") or c.get("similarity_score") or c.get("score")
         match = f"{sim:.0%} match" if sim is not None else "word match"
         text = c.get("text") or c.get("content", "")
-        cards.append(card_html(c["metadata"], text, rank=n, match=match, show_desc=True))
+        cards.append(card_html(c["metadata"], text, rank=n, match=match, show_desc=True,
+                               photo=photos[n - 1]))
     st.markdown(f'<div class="answer-head">Products used for this answer '
                 f'(closest match {best_sim:.0%})</div><div class="pgrid">{"".join(cards)}</div>',
                 unsafe_allow_html=True)
@@ -452,16 +477,18 @@ if not st.session_state.messages:
                 unsafe_allow_html=True)
     with st.container(key="featured"):
         fcols = st.columns(4)
+        fphotos = card_photos([m for m, _ in st.session_state.featured])
         for i, (m, text) in enumerate(st.session_state.featured):
             with fcols[i]:
-                st.markdown(card_html(m, text), unsafe_allow_html=True)
+                st.markdown(card_html(m, text, photo=fphotos[i]), unsafe_allow_html=True)
                 if st.button("Ask about this", key=f"feat{i}", use_container_width=True):
                     ask(f"Tell me about {m.get('product')} by {m.get('brand')}: what is it, "
                         f"what does it cost, and are there similar options?")
 
     st.markdown('<div class="footnote">Student project built on the public Kaggle BigBasket product '
                 'dataset (2022 snapshot). Not affiliated with BigBasket. Prices come from the dataset, '
-                'not the live store.</div>', unsafe_allow_html=True)
+                'not the live store. Product photos, where shown, come from Open Food Facts and its '
+                'sister databases (CC BY-SA).</div>', unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
 # CHAT CONVERSATION
