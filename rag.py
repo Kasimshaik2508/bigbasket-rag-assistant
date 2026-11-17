@@ -354,6 +354,77 @@ Standalone Question:"""
 
 
 # ---------------------------------------------------------------------------
+# FOLLOW-UP ANCHORING
+# ---------------------------------------------------------------------------
+FOLLOW_UP_RE = re.compile(
+    r"\b(cheaper|cheapest|alternative|alternatives|another|instead|these|those|them|it|its|same|"
+    r"ones|the first|the second|that one|this one)\b",
+    re.IGNORECASE,
+)
+
+
+def is_follow_up(query: str) -> bool:
+    """True when the question only makes sense with the previous turn."""
+    q = (query or "").strip().lower()
+    if FOLLOW_UP_RE.search(q):
+        return True
+    return bool(
+        re.match(r"^(and|also|what about|how about|any|do they|does it|is it|are they|which one)\b", q)
+    )
+
+
+def follow_up_anchor(chat_history: List[Dict[str, Any]], max_products: int = 2) -> str:
+    """Previous topic + products, so a follow-up retrieves the same catalogue context."""
+    if not chat_history:
+        return ""
+
+    parts: List[str] = []
+    last_user = next((m for m in reversed(chat_history) if m.get("role") == "user"), None)
+    if last_user:
+        topic = live_search_query(last_user.get("content", ""), max_words=6)
+        if topic:
+            parts.append(topic)
+
+    last_assistant = next((m for m in reversed(chat_history) if m.get("role") == "assistant"), None)
+    products: List[str] = []
+    if last_assistant:
+        for chunk in last_assistant.get("chunks") or []:
+            name = (chunk.get("metadata") or {}).get("product")
+            if name and name not in products:
+                products.append(name)
+    parts.extend(products[:max_products])
+
+    return " ".join(parts).strip()
+
+
+def previous_turn_price(chat_history: Optional[List[Dict[str, Any]]]) -> Optional[float]:
+    """Price of the first product discussed in the previous answer, if any."""
+    if not chat_history:
+        return None
+    last_assistant = next((m for m in reversed(chat_history) if m.get("role") == "assistant"), None)
+    if not last_assistant:
+        return None
+    for chunk in last_assistant.get("chunks") or []:
+        try:
+            price = float((chunk.get("metadata") or {}).get("price"))
+        except (TypeError, ValueError):
+            continue
+        if price > 0:
+            return price
+    return None
+
+
+def wants_cheaper(query: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(cheaper|cheapest|lower price|less expensive|affordable|budget)\b",
+            query or "",
+            re.IGNORECASE,
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
 # DATA LOADING & CHUNKING
 # ---------------------------------------------------------------------------
 def load_and_clean(path: str = DATA_PATH, max_rows: int = MAX_ROWS) -> pd.DataFrame:
@@ -692,6 +763,12 @@ def rag_enhanced(
     search_query = query
     if chat_history:
         search_query = contextualize_query(query, chat_history, llm)
+        # Follow-ups also inherit the previous topic and products verbatim, so the
+        # retrieval query cannot drift when the rewrite drops the entity.
+        if is_follow_up(query):
+            anchor = follow_up_anchor(chat_history)
+            if anchor:
+                search_query = f"{search_query} {anchor}".strip()
 
     # 1. Guardrail Check
     is_safe, _ = check_input_guardrail(query)
@@ -735,6 +812,16 @@ def rag_enhanced(
 
     results = all_results[:top_k]
 
+    # 3b. "Cheaper" follow-ups only keep products below the price just discussed.
+    if chat_history and wants_cheaper(query):
+        reference = previous_turn_price(chat_history)
+        if reference:
+            cheaper = [
+                d for d in all_results if 0 < (d["metadata"].get("price") or 0) < reference
+            ]
+            if cheaper:
+                results = cheaper[:top_k]
+
     # 4. Fallback if no relevant documents found
     if not results:
         return {
@@ -769,9 +856,19 @@ def rag_enhanced(
     confidence = max(doc["score"] for doc in results)
 
     # 6. Generate answer using the LLM (exact pattern)
+    history_block = ""
+    if chat_history:
+        lines = []
+        for msg in chat_history[-4:]:
+            role = "User" if msg.get("role") == "user" else "Assistant"
+            lines.append(f"{role}: {(msg.get('content') or '')[:300]}")
+        history_block = "\n\nRecent conversation:\n" + "\n".join(lines) + "\n"
+
     prompt = f"""Use the following context to answer the question concisely.
 Cite product numbers like [1], [2] when mentioning items.
-
+If the question refers to earlier items ("these", "those", "it", "cheaper"), answer about the
+products named in the recent conversation and do not switch to different products.
+{history_block}
 Context:
 {context}
 

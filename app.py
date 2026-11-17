@@ -3,6 +3,7 @@ app.py — Streamlit chat UI for the BigBasket RAG assistant.
 
 Presentation layer follows a Soft-UI (neumorphic) design system:
 cool-grey single surface, dual RGB shadows, inset wells, violet accent.
+Typography is Roboto with a compact commerce type scale.
 
 Run: streamlit run app.py
 """
@@ -48,7 +49,7 @@ TAG_SVG = (
 st.html(
     """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=DM+Sans:wght@400;500;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap');
 
 :root{
   --surface:#E0E5EC;
@@ -77,15 +78,16 @@ html, body, .stApp, [data-testid="stAppViewContainer"]{
 }
 
 html, body, .stApp, button, input, textarea, select, [data-testid="stSidebar"]{
-  font-family:'DM Sans', system-ui, -apple-system, sans-serif;
+  font-family:'Roboto', Arial, sans-serif;
 }
 
 .stApp, .stApp p, .stApp li, .stApp label, [data-testid="stMarkdownContainer"]{
   color:#3D4852;
+  line-height:1.5;
 }
 
 h1,h2,h3,h4,h5,h6,.font-display{
-  font-family:'Plus Jakarta Sans', sans-serif !important;
+  font-family:'Roboto', Arial, sans-serif !important;
   letter-spacing:-0.025em;
   color:#3D4852;
 }
@@ -134,11 +136,11 @@ header[data-testid="stHeader"]{ background:transparent !important; }
 .brand-mark svg{ width:23px; height:23px; }
 .brand-text{
   display:flex; flex-direction:column; gap:2px;
-  font-family:'Plus Jakarta Sans', sans-serif;
+  font-family:'Roboto', Arial, sans-serif;
   font-weight:800; font-size:1.06rem; letter-spacing:-0.02em; color:#3D4852;
 }
 .brand-sub{
-  font-family:'DM Sans', sans-serif;
+  font-family:'Roboto', Arial, sans-serif;
   font-size:0.66rem; font-weight:600; letter-spacing:0.16em;
   text-transform:uppercase; color:#6B7280;
 }
@@ -166,9 +168,9 @@ header[data-testid="stHeader"]{ background:transparent !important; }
   background:#6C63FF; box-shadow:0 0 0 3px rgba(108,99,255,0.16);
 }
 .hero-title{
-  font-family:'Plus Jakarta Sans', sans-serif;
-  font-weight:800; font-size:clamp(2.15rem, 3.3vw, 3.05rem);
-  line-height:1.04; letter-spacing:-0.04em; color:#3D4852;
+  font-family:'Roboto', Arial, sans-serif;
+  font-weight:700; font-size:clamp(1.55rem, 2.35vw, 2rem);
+  line-height:1.15; letter-spacing:-0.02em; color:#3D4852;
   margin:18px 0 12px;
   text-wrap:balance;
 }
@@ -196,7 +198,7 @@ header[data-testid="stHeader"]{ background:transparent !important; }
   border-radius:16px !important;
   padding:0.7rem 1.05rem !important;
   min-height:46px;
-  font-family:'DM Sans', sans-serif !important;
+  font-family:'Roboto', Arial, sans-serif !important;
   font-weight:600 !important;
   font-size:0.9rem !important;
   box-shadow:var(--raised-sm) !important;
@@ -314,7 +316,7 @@ header[data-testid="stHeader"]{ background:transparent !important; }
 .depth-caption{ text-align:center; }
 .depth-title{
   display:block;
-  font-family:'Plus Jakarta Sans', sans-serif;
+  font-family:'Roboto', Arial, sans-serif;
   font-size:0.98rem; font-weight:700; color:#3D4852;
 }
 .depth-sub{
@@ -366,8 +368,8 @@ header[data-testid="stHeader"]{ background:transparent !important; }
 }
 .product-name{
   margin-top:12px;
-  font-family:'Plus Jakarta Sans', sans-serif;
-  font-size:0.9rem; font-weight:700; line-height:1.32; color:#3D4852;
+  font-family:'Roboto', Arial, sans-serif;
+  font-size:0.9rem; font-weight:500; line-height:1.35; color:#3D4852;
   display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;
   overflow:hidden;
 }
@@ -379,8 +381,9 @@ header[data-testid="stHeader"]{ background:transparent !important; }
 .price-chip{
   padding:5px 11px; border-radius:12px;
   background:#E0E5EC; box-shadow:var(--raised-sm);
-  font-family:'Plus Jakarta Sans', sans-serif;
-  font-size:0.98rem; font-weight:800; color:#3D4852;
+  font-family:'Roboto', Arial, sans-serif;
+  font-size:0.98rem; font-weight:700; color:#3D4852;
+  font-variant-numeric:tabular-nums;
 }
 .price-chip.policy{ font-size:0.7rem; color:#4F46D6; }
 .match-chip{
@@ -405,6 +408,7 @@ header[data-testid="stHeader"]{ background:transparent !important; }
   padding:5px 12px; border-radius:9999px;
   background:#E0E5EC; box-shadow:var(--pressed-sm);
   font-size:0.74rem; font-weight:600; color:#3D4852;
+  font-variant-numeric:tabular-nums;
 }
 .chip-key{
   font-size:0.62rem; font-weight:700; letter-spacing:0.1em;
@@ -488,12 +492,12 @@ header[data-testid="stHeader"]{ background:transparent !important; }
   display:grid; place-items:center;
   border-radius:9999px;
   background:#E0E5EC; box-shadow:var(--pressed-deep);
-  font-family:'Plus Jakarta Sans', sans-serif;
+  font-family:'Roboto', Arial, sans-serif;
   font-weight:800; font-size:0.95rem; color:#8A3125;
 }
 .notice strong{
   display:block; margin-bottom:4px;
-  font-family:'Plus Jakarta Sans', sans-serif;
+  font-family:'Roboto', Arial, sans-serif;
   font-size:0.9rem; font-weight:700; color:#8A3125;
 }
 .notice p{ margin:0; font-size:0.9rem; line-height:1.6; color:#3D4852; }
@@ -538,7 +542,7 @@ header[data-testid="stHeader"]{ background:transparent !important; }
 [data-testid="stSidebar"]{
   background:#E0E5EC !important;
   border-right:none !important;
-  box-shadow:10px 0 24px rgba(163,177,198,0.32);
+  box-shadow:10px 0 24px rgba(198,205,186,0.32);
 }
 [data-testid="stSidebar"] > div,
 [data-testid="stSidebarContent"]{ background:transparent !important; }
@@ -556,7 +560,7 @@ header[data-testid="stHeader"]{ background:transparent !important; }
   margin:20px 0;
 }
 .side-title{
-  font-family:'Plus Jakarta Sans', sans-serif;
+  font-family:'Roboto', Arial, sans-serif;
   font-size:1.12rem; font-weight:800; letter-spacing:-0.02em; color:#3D4852;
   margin-bottom:2px;
 }
@@ -666,7 +670,7 @@ header[data-testid="stHeader"]{ background:transparent !important; }
   gap:10px; font-size:0.78rem; color:#6B7280;
 }
 .info-row b{
-  font-family:'Plus Jakarta Sans', sans-serif;
+  font-family:'Roboto', Arial, sans-serif;
   font-size:0.78rem; font-weight:700; color:#3D4852; text-align:right;
 }
 .key-line{
@@ -802,7 +806,7 @@ div[data-baseweb="textarea"]{
     justify-content:flex-end;
   }
 
-  .hero-title{ font-size:clamp(1.95rem, 2.5vw + 0.5rem, 2.85rem); margin:12px 0 9px; }
+  .hero-title{ font-size:clamp(1.45rem, 2.5vw + 0.3rem, 1.85rem); margin:12px 0 9px; }
   .hero-subtitle{ font-size:0.92rem; line-height:1.55; }
   .section-label{ margin:clamp(10px, 1.7vh, 20px) 0 9px; }
 
@@ -896,7 +900,7 @@ div[data-baseweb="textarea"]{
 
 /* Narrow desktop heights: shave the landing so the shell still fits. */
 @media (min-width: 1100px) and (max-height: 800px){
-  .hero-title{ font-size:clamp(1.8rem, 2.2vw + 0.5rem, 2.5rem); margin:9px 0 8px; }
+  .hero-title{ font-size:clamp(1.4rem, 2.2vw + 0.3rem, 1.75rem); margin:9px 0 8px; }
   .hero-subtitle{ font-size:0.88rem; line-height:1.5; }
   .section-label{ margin:8px 0 8px; }
   .st-key-suggestions .stButton > button{ min-height:44px; padding:7px 13px !important; }
@@ -911,7 +915,7 @@ div[data-baseweb="textarea"]{
 @media (max-width: 900px){
   .block-container{ padding-top:0.75rem; padding-bottom:7.5rem; }
   .top-nav{ padding:12px 16px 12px 46px; border-radius:26px; margin-bottom:26px; }
-  .hero-title{ font-size:clamp(2.05rem, 8vw, 2.7rem); }
+  .hero-title{ font-size:clamp(1.6rem, 7vw, 2rem); }
   .depth-stage{ padding:26px 20px 22px; }
   .depth-ring{ width:196px; height:196px; }
   .depth-well{ width:144px; height:144px; }
