@@ -24,9 +24,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Prevent unnecessary network attempts by Hugging Face / Transformers offline
-os.environ["HF_HUB_OFFLINE"] = "1"
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
+# Offline mode stops Hugging Face from checking the internet, which is handy
+# on a laptop where the models are already downloaded. On a fresh server
+# (Streamlit Cloud) the models must be downloaded once, so offline mode is
+# only switched on when BB_OFFLINE=1 is set.
+if os.getenv("BB_OFFLINE") == "1":
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 import pandas as pd
 
