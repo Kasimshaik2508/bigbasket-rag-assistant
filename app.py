@@ -11,6 +11,8 @@ from collections import Counter
 
 import streamlit as st
 
+from product_art import parse_header, pick_art
+
 from rag import FALLBACK_MSG, GUARDRAIL_MSG, RAGPipeline, SIM_THRESHOLD, TOP_K
 
 st.set_page_config(page_title="BigBasket Assistant", page_icon="🧺", layout="wide")
@@ -265,6 +267,18 @@ header[data-testid="stHeader"] {{ background: transparent; }}
   background: {BG_CARD_SUBTLE};
   border: 1px solid {BORDER_MAIN};
 }}
+/* product illustration tile (dataset has no photos; see product_art.py) */
+.tag .art {{
+  height: 72px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2.3rem;
+  line-height: 1;
+  margin-bottom: 10px;
+}}
+.shelf .tag .art {{ height: 60px; font-size: 1.9rem; }}
 .tag .name {{
   font-weight: 600;
   color: {TEXT_MAIN};
@@ -649,11 +663,15 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 # UI HELPERS
 # ---------------------------------------------------------------------------
-def tag_html(m, n=None, match=None, desc=None):
+def tag_html(m, n=None, match=None, desc=None, sub_category="", ptype=""):
     price = f"₹{m['price']:,.0f}" if m.get("price", -1) >= 0 else "Policy"
+    # Illustration picked from type / sub-category / name (product_art.py)
+    emoji, tint = pick_art(m.get("product", ""), m.get("category", ""), sub_category, ptype)
+    label = html.escape(ptype or sub_category or m.get("category", "") or "Product")
     parts = ['<div class="tag">']
     if n is not None:
         parts.append(f'<span class="n">#{n}</span>')
+    parts.append(f'<div class="art" style="background:{tint}" role="img" aria-label="{label}">{emoji}</div>')
     parts.append(f'<div class="name">{html.escape(m.get("product", "Unknown"))}</div>')
     parts.append(f'<div class="brand-l">{html.escape(m.get("brand", "Unknown"))}</div>')
     parts.append(f'<div class="row"><span class="price">{price}</span>')
@@ -674,7 +692,9 @@ def render_tags(chunks, best_sim):
         match = (f"{sim:.0%} match" if sim is not None else "word match")
         content = c.get("text") or c.get("content", "")
         desc = content.split("Description:", 1)[-1].strip()
-        tags.append(tag_html(c["metadata"], n=n, match=match, desc=desc))
+        sub, ptype = parse_header(content)   # read from the chunk's header lines
+        tags.append(tag_html(c["metadata"], n=n, match=match, desc=desc,
+                             sub_category=sub, ptype=ptype))
     with st.expander(f"Retrieved Catalogue Evidence ({len(chunks)} items, top match {best_sim:.0%})", expanded=False):
         st.markdown(f'<div class="tags">{"".join(tags)}</div>', unsafe_allow_html=True)
 
