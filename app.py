@@ -204,7 +204,9 @@ if "messages" not in st.session_state:
 if "featured" not in st.session_state:
     # 4 real products for the opening screen, with their chunk text (for MRP,
     # rating and type). Prefer discounted items so the cards show a badge.
-    pool = [(m, t) for m, t in zip(pipeline.metas, pipeline.texts)
+    # texts live on the retriever in this pipeline (RAGPipeline only exposes ids/metas)
+    all_texts = getattr(pipeline, "texts", None) or pipeline.retriever.texts
+    pool = [(m, t) for m, t in zip(pipeline.metas, all_texts)
             if m.get("source") == "BigBasket Catalogue" and m.get("chunk") == 0
             and 0 < m.get("price", 0) < 1500 and len(m.get("product", "")) < 48]
     deals = [p for p in pool if "% off" in p[1]]
