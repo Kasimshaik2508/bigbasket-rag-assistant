@@ -179,11 +179,34 @@ def run_evaluation():
                 f"Decomposed: {scores['decomposed']}"
             )
 
+            # Evidence check: did the retrieved context actually contain what the
+            # question needs, and which products were retrieved?
+            context_text = (result.get("context") or "").lower()
+            evidence = {
+                "products": [
+                    c.get("metadata", {}).get("product") for c in result.get("chunks", [])
+                ],
+                "prices": [
+                    c.get("metadata", {}).get("price") for c in result.get("chunks", [])
+                ],
+                "keywords_in_context": [
+                    kw for kw in tc["expected_keywords"] if kw.lower() in context_text
+                ],
+                "best_sim": result.get("best_sim"),
+                "sub_queries": result.get("sub_queries"),
+            }
+            print(
+                f"  Evidence: {len(evidence['products'])} chunks | "
+                f"keywords in context: {evidence['keywords_in_context']}"
+            )
+            print(f"  Retrieved: {evidence['products']}")
+
             results.append({
                 "test_case": tc,
                 "result_summary": {
                     "answer_preview": result["answer"][:300],
                     "scores": scores,
+                    "evidence": evidence,
                     "passed": passed,
                 },
             })

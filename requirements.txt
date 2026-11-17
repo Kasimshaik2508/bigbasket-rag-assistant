@@ -12,4 +12,7 @@ google-genai
 groq>=0.11.0
 langchain-groq
 langchain-core
+websockets
+fastapi>=0.115
+uvicorn[standard]
 

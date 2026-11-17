@@ -68,6 +68,7 @@ User Query
 | **LLM Orchestration** | Primary: **Groq** (`openai/gpt-oss-20b`, `gpt-oss-120b`).<br>Fallback: **Google Gemini** (`gemini-2.0-flash`, `gemini-2.5-flash`). | Ultra-fast token generation (~800 tokens/sec on Groq) with multi-model failover redundancy. |
 | **Audit Logging** | JSON-Lines logger (`logs/audit_YYYYMMDD.jsonl`). | Records timestamp, latency, flow branch, cache status, confidence score, and exact chunks sent. |
 | **Streamlit UI** | Modern design with **Dark Mode Toggle**, price tags, category aisle navigation, and live telemetry badges. | Fast, clean interface. |
+| **Voice orb frontend** | React + TypeScript + Tailwind + shadcn WebGPU orb wired to `stt.py` and `rag.py` through `api.py`. | Speak a question and hear a catalogue-grounded answer. |
 
 ---
 
@@ -101,6 +102,9 @@ GROQ_API_KEY=your_groq_api_key_here
 
 # Optional Fallback LLM (Free key from aistudio.google.com)
 GEMINI_API_KEY=your_gemini_api_key_here
+
+# Required for voice input (OpenAI Realtime transcription)
+OPENAI_API=your_openai_api_key_here
 ```
 
 ### 3. Run the Streamlit Application
@@ -108,6 +112,87 @@ GEMINI_API_KEY=your_gemini_api_key_here
 streamlit run app.py
 ```
 Open [http://localhost:8501](http://localhost:8501) in your browser.
+
+---
+
+## 🎙️ Voice Orb Frontend (React + shadcn)
+
+The repository originally had **no** React, Tailwind, TypeScript or shadcn setup,
+so a separate `frontend/` app was scaffolded. It stays adjacent to the Streamlit
+app and shares the same Python backend — no UI rewrite was needed.
+
+### Setup that was applied
+
+```bash
+cd frontend
+npm install
+npm install react react-dom clsx tailwind-merge class-variance-authority \
+  @radix-ui/react-slot lucide-react vgpu @vgpu/wgsl
+npm install -D vite @vitejs/plugin-react typescript @types/react \
+  @types/react-dom @types/node tailwindcss @tailwindcss/vite tw-animate-css
+npm run build
+```
+
+If you were starting from scratch, the equivalent CLI flow is:
+
+```bash
+npm create vite@latest frontend -- --template react-ts
+cd frontend
+npx shadcn@latest init        # creates components.json, lib/utils.ts, CSS tokens
+npx shadcn@latest add button
+npm install vgpu @vgpu/wgsl lucide-react
+```
+
+### Default paths (and why they matter here)
+
+| Concern | Path |
+|---|---|
+| shadcn components | `frontend/components/ui/` |
+| shadcn config | `frontend/components.json` |
+| Global styles | `frontend/src/index.css` (Vite default; Next.js uses `app/globals.css`) |
+| Shared helper | `frontend/lib/utils.ts` (`cn`) |
+
+The supplied orb imports `@/components/ui/orb-bloop`, so the `@` alias in
+`vite.config.ts` and `tsconfig.json` points at the **project root**, not `src/`.
+This is deliberate: if components land somewhere else, `components.json`
+aliases stop matching the imports, `shadcn add` generates files in a different
+folder, and the `@/components/ui/orb-bloop-utils/*` imports break. Keeping
+`/components/ui` is therefore required, not cosmetic.
+
+`orb-bloop-utils/` (gpu-runtime, logger, types, bloop-wgsl, palettes,
+use-orb-audio) was not included in the supplied component and has been
+implemented here. The WGSL shader is prepared with `@vgpu/wgsl/prepare`
+because `vgpu.effect()` expects a reflected `ShaderSource`, not a raw string.
+
+### Props, state and assets
+
+`OrbBloop` takes `state` (`idle | listen | think | speak`), `audioMode`
+(`ambient | mic | file`), optional audio element/src, four RGB palettes,
+`size`, `watercolorStrength` and `watercolorAnimated`. The React state machine
+is owned by `components/VoiceAssistant.tsx`:
+
+`idle → listen` (MediaRecorder) `→ think` (STT + RAG) `→ speak` (browser
+SpeechSynthesis) `→ idle`. Answers can be muted with the volume button.
+
+The orb itself needs no image assets. A known Unsplash grocery image
+(`photo-1542838132-92c53300491e`) is used only as a faint hero background;
+all icons come from `lucide-react`. WebGPU is used when available, with an
+animated 2D canvas fallback for browsers/adapters without it. The orb scales
+with its container (clamped 180–260px) and the layout collapses to one column
+below the `lg` breakpoint.
+
+### Run it
+
+```bash
+# terminal 1 — API bridge (stt.py + rag.py)
+uvicorn api:app --host 127.0.0.1 --port 8000
+
+# terminal 2 — Vite dev server (proxies /api to :8000)
+cd frontend && npm run dev
+```
+
+Open [http://127.0.0.1:5173](http://127.0.0.1:5173). `OPENAI_API` is required
+for transcription; the chat UI at `:8501` keeps working without it.
 
 ---
 

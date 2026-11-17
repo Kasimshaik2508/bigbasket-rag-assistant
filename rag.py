@@ -22,6 +22,8 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from dotenv import load_dotenv
 
+from qc_client import QuickCommerceClient, QuickCommerceError
+
 load_dotenv()
 
 # Prevent unnecessary network attempts by Hugging Face / Transformers offline
@@ -72,6 +74,135 @@ GUARDRAIL_MSG = (
     "unsupported topics, or potential prompt injection. Please ask questions "
     "related to BigBasket products, prices, ingredients, comparisons, or policies."
 )
+
+
+def format_live_block(live: Dict[str, Any]) -> str:
+    """Render live QuickCommerce data as a context block for the answer prompt."""
+    lines = [
+        "LIVE DATA (fetched just now from the platform's own app — "
+        "prefer these prices, stock and ETAs over the catalogue snapshot):"
+    ]
+
+    eta = live.get("eta")
+    if eta:
+        state = "open" if eta.get("open") else "closed"
+        lines.append(
+            f"Delivery ETA — {eta.get('platform')}: {eta.get('eta')} "
+            f"(store {eta.get('store_id')}, {state})"
+        )
+
+    products = live.get("products") or []
+    if products:
+        lines.append(f"Live results for '{live.get('query')}' on {live.get('platform')}:")
+        for n, p in enumerate(products[:5], 1):
+            lines.append(
+                f"{n}. id={p.get('id')} | {p.get('brand') or ''} {p.get('name')} | "
+                f"{p.get('quantity')} | {p.get('currency')} {p.get('price')} "
+                f"(MRP {p.get('mrp')}) | in stock: {p.get('available')} | "
+                f"ETA {p.get('sla')} | {p.get('deeplink')}"
+            )
+    return "\n".join(lines)
+
+
+def default_live_client() -> Optional[QuickCommerceClient]:
+    """Build a live client from the QuickCommerceAPI env var, or None if it is absent."""
+    try:
+        return QuickCommerceClient()
+    except ValueError:
+        return None
+
+
+# Question scaffolding stripped from live search queries; longest first.
+LIVE_QUERY_PREFIXES = (
+    "what is the price of",
+    "what's the price of",
+    "what is the cost of",
+    "how much does it cost to buy",
+    "how much does",
+    "how much do",
+    "how much is",
+    "what are the",
+    "what is the",
+    "what is",
+    "what's",
+    "which is the",
+    "which",
+    "can you",
+    "could you",
+    "would you",
+    "tell me",
+    "show me",
+    "give me",
+    "find me",
+    "do you have",
+    "is there",
+    "are there",
+    "i want",
+    "i need",
+    "please",
+    "suggest",
+    "list",
+    "compare",
+)
+
+LIVE_QUERY_STOPWORDS = {
+    "a", "an", "the", "is", "are", "was", "were", "of", "for", "on", "in", "to", "at",
+    "from", "with", "me", "my", "do", "does", "and", "or", "cost", "costs", "there",
+    "it", "its", "this", "that", "these", "those",
+}
+
+
+def live_search_query(question: str, max_words: int = 6) -> str:
+    """Turn a conversational question into a short, search-ready API query.
+
+    The QuickCommerce API matches keywords, so "What is the price of Amul butter?"
+    becomes "amul butter" instead of returning noisy results for the whole sentence.
+    """
+    text = (question or "").strip().lower()
+    text = re.sub(r"['\u2019]s\b", "", text)  # possessive: BigBasket's -> bigbasket
+    text = re.sub(r"[^\w\s\u20b9%.-]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip().strip(".")
+
+    changed = True
+    while changed:
+        changed = False
+        for prefix in LIVE_QUERY_PREFIXES:
+            if text == prefix:
+                text = ""
+                changed = True
+                break
+            if text.startswith(prefix + " "):
+                text = text[len(prefix) + 1 :].strip()
+                changed = True
+                break
+
+    # "face wash suits oily skin, and what does it cost" -> "face wash suits oily skin"
+    text = re.split(r"\s+(?:and\s+)?(?:what|how|which|who|why|when)\b", text)[0].strip()
+
+    words = [w for w in text.split() if w.strip(".") and w not in LIVE_QUERY_STOPWORDS]
+    if not words:
+        words = [w for w in re.findall(r"[\w\u20b9%.-]+", (question or "").lower()) if w not in LIVE_QUERY_STOPWORDS]
+    if not words:
+        words = [w for w in re.findall(r"[\w\u20b9%.-]+", (question or "").lower())]
+    return " ".join(words[:max_words]) or (question or "").strip()
+
+
+def live_request_kwargs(
+    enabled: bool,
+    platform: str,
+    lat: Optional[float],
+    lon: Optional[float],
+    pincode: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Map UI state onto RAGPipeline.answer() live parameters."""
+    return {
+        "live_search": bool(enabled),
+        "live_eta": bool(enabled),
+        "platform": platform,
+        "lat": lat,
+        "lon": lon,
+        "pincode": pincode,
+    }
 
 from datetime import datetime, timezone
 
@@ -545,6 +676,7 @@ def rag_enhanced(
     return_context: bool = False,
     decompose: bool = True,
     chat_history: Optional[List[Dict[str, str]]] = None,
+    extra_context: str = "",
 ) -> Dict[str, Any]:
     """
     RAG Pipeline matching your pattern:
@@ -612,6 +744,8 @@ def rag_enhanced(
 
     # 5. Prepare context and sources (exact pattern)
     context = "\n\n".join(doc["content"] for doc in results)
+    if extra_context:
+        context = f"{context}\n\n{extra_context}"
 
     sources = [
         {
@@ -665,8 +799,17 @@ Answer:"""
 # PIPELINE CLASS WRAPPER (for caching & Streamlit integration)
 # ---------------------------------------------------------------------------
 class RAGPipeline:
-    def __init__(self, data_path: str = DATA_PATH):
-        self.retriever = BigBasketRetriever(data_path=data_path)
+    def __init__(
+        self,
+        data_path: str = DATA_PATH,
+        retriever: Optional[BigBasketRetriever] = None,
+        llm: Optional[MultiProviderLLM] = None,
+        live_client: Optional[QuickCommerceClient] = None,
+    ):
+        self.retriever = retriever if retriever is not None else BigBasketRetriever(data_path=data_path)
+        self.llm = llm
+        # Picked up automatically from QuickCommerceAPI; None keeps the app catalogue-only.
+        self.live_client = live_client if live_client is not None else default_live_client()
         self._cache: Dict[str, Dict[str, Any]] = {}
         self._cache_hits = 0
         self._cache_misses = 0
@@ -701,12 +844,22 @@ class RAGPipeline:
         rerank: bool = True,
         decompose: bool = True,
         chat_history: Optional[List[Dict[str, str]]] = None,
+        live_search: bool = False,
+        live_eta: bool = False,
+        platform: str = "BigBasket",
+        lat: Optional[float] = None,
+        lon: Optional[float] = None,
+        pincode: Optional[str] = None,
+        live_client: Optional[QuickCommerceClient] = None,
     ) -> Dict[str, Any]:
         start_t = time.perf_counter()
         timestamp = datetime.now(timezone.utc).isoformat()
 
         cache_k = hashlib.sha256(question.strip().lower().encode("utf-8")).hexdigest()
-        if not chat_history and cache_k in self._cache:
+        # Live answers depend on location and platform, so they never use the
+        # question-only cache (the client has its own short-lived HTTP cache).
+        use_cache = not chat_history and not (live_search or live_eta)
+        if use_cache and cache_k in self._cache:
             self._cache_hits += 1
             res = dict(self._cache[cache_k])
             res["cached"] = True
@@ -738,7 +891,37 @@ class RAGPipeline:
 
         self._cache_misses += 1
 
-        llm = MultiProviderLLM(groq_api_key=groq_api_key, gemini_api_key=gemini_api_key)
+        llm = self.llm or MultiProviderLLM(groq_api_key=groq_api_key, gemini_api_key=gemini_api_key)
+
+        # Live QuickCommerce lookup (search and/or delivery ETA). Billed per platform,
+        # so failures degrade to catalogue-only answers instead of breaking the request.
+        live: Optional[Dict[str, Any]] = None
+        live_error: Optional[str] = None
+        client = live_client or self.live_client
+        if live_search or live_eta:
+            if lat is None or lon is None:
+                live_error = "location_required"
+            elif client is None:
+                live_error = "live_client_not_configured"
+            else:
+                try:
+                    search_query = live_search_query(question)
+                    live = {"query": search_query, "platform": platform}
+                    if live_search:
+                        live["products"] = client.search(
+                            search_query, platform=platform, lat=lat, lon=lon, pincode=pincode
+                        )
+                    if live_eta:
+                        live["eta"] = client.eta(
+                            platform=platform, lat=lat, lon=lon, pincode=pincode
+                        )
+                except QuickCommerceError as e:
+                    live = None
+                    live_error = f"live_api_error: {e.status_code} {e}"
+                except Exception as e:
+                    live = None
+                    live_error = f"live_api_error: {e}"
+
         res = rag_enhanced(
             query=question,
             retriever=self.retriever,
@@ -748,8 +931,11 @@ class RAGPipeline:
             return_context=True,
             decompose=decompose,
             chat_history=chat_history,
+            extra_context=format_live_block(live) if live else "",
         )
 
+        res["live"] = live
+        res["live_error"] = live_error
         res["cached"] = False
         res["latency_ms"] = round((time.perf_counter() - start_t) * 1000, 2)
 
@@ -792,5 +978,6 @@ class RAGPipeline:
         res["audit_file"] = log_file
         res["audit_entry"] = audit_entry
 
-        self._cache[cache_k] = res
+        if use_cache:
+            self._cache[cache_k] = res
         return res
