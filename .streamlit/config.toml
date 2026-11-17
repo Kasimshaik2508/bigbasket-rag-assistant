@@ -10,3 +10,7 @@ font = "sans serif"
 
 [client]
 toolbarMode = "minimal"
+
+# Serve files in ./static at app/static/... (used for the product photos)
+[server]
+enableStaticServing = true

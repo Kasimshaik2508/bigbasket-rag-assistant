@@ -144,3 +144,50 @@ def parse_header(chunk_text):
     sub = re.search(r"Category:[^\n>]*>\s*([^\n]*)", chunk_text or "")
     typ = re.search(r"Type:\s*([^\n]*)", chunk_text or "")
     return (sub.group(1).strip() if sub else ""), (typ.group(1).strip() if typ else "")
+
+
+# ---------------------------------------------------------------------------
+# REAL PHOTOS for each illustration (downloaded once by fetch_photos.py into
+# static/photos/<slug>.jpg from Pexels, which allows free use in apps).
+# Same matching rules as above, so every card gets the photo of its type.
+# emoji -> (file slug, Pexels search words)
+# ---------------------------------------------------------------------------
+PHOTO_FOR = {
+    "🥣": ("cereal", "breakfast cereal bowl"), "🍞": ("bread", "bread loaf"),
+    "🍰": ("cake", "cake slice"), "🍪": ("biscuits", "biscuits cookies"),
+    "🍫": ("chocolate", "chocolate bar"), "🍨": ("ice-cream", "ice cream"),
+    "🍮": ("indian-sweets", "indian sweets mithai"), "🍚": ("rice", "uncooked rice grains"),
+    "🫘": ("dal", "lentils dal"), "🌾": ("flour", "wheat flour"),
+    "🧴": ("lotion", "cosmetic bottle skincare"), "🧈": ("ghee", "ghee butter"),
+    "🫒": ("cooking-oil", "cooking oil bottle"), "🧂": ("salt-sugar", "sugar salt"),
+    "🥫": ("sauce", "tomato ketchup sauce"), "🌶️": ("spices", "indian spices"),
+    "🍯": ("honey", "honey jar"), "🍓": ("jam", "jam jar"),
+    "🥒": ("pickle", "pickle jar"), "🍜": ("noodles", "instant noodles"),
+    "🍱": ("ready-meal", "ready to eat meal"), "🥜": ("dry-fruits", "almonds cashews dry fruits"),
+    "🍿": ("snacks", "potato chips snacks"), "🍵": ("tea", "tea cup leaves"),
+    "☕": ("coffee", "coffee beans cup"), "🧃": ("juice", "fruit juice glass"),
+    "🫙": ("containers", "storage containers kitchen"), "💧": ("water", "water bottle"),
+    "💊": ("supplements", "vitamin capsules"), "🥤": ("soft-drink", "soft drink can"),
+    "🧀": ("cheese", "cheese paneer"), "🥛": ("milk", "milk glass"),
+    "🥚": ("eggs", "eggs"), "🐟": ("fish", "fresh fish"),
+    "🍗": ("chicken", "raw chicken meat"), "🍎": ("fruits", "fresh fruits"),
+    "🥦": ("vegetables", "fresh vegetables"), "💐": ("flowers", "flower bouquet"),
+    "🧽": ("cleaning", "cleaning sponge brush"), "🧷": ("diapers", "baby diapers"),
+    "🍼": ("baby", "baby bottle"), "🪥": ("toothbrush", "toothbrush toothpaste"),
+    "🧼": ("soap", "soap bar"), "💄": ("makeup", "makeup cosmetics"),
+    "🌸": ("perfume", "perfume bottle"), "🪒": ("shaving", "shaving razor"),
+    "🌷": ("feminine-care", "pink self care products"), "🫧": ("detergent", "laundry detergent"),
+    "🌬️": ("air-freshener", "air freshener spray"), "🗑️": ("garbage-bags", "garbage bags"),
+    "🪔": ("pooja", "diya oil lamp"), "🐾": ("pet", "dog food bowl"),
+    "🪴": ("garden", "potted plant"), "🔪": ("kitchen-tools", "kitchen knife tools"),
+    "🍳": ("cookware", "frying pan cookware"), "🍽️": ("tableware", "plates bowls tableware"),
+    "🔌": ("electricals", "light bulb"), "✏️": ("stationery", "pens stationery"),
+    "👟": ("shoe-care", "shoe polish"), "🎉": ("party", "party decorations"),
+    "🥕": ("carrots", "fresh carrots"), "📄": ("policy", "delivery package box"),
+    "🛒": ("groceries", "groceries basket"),
+}
+
+
+def photo_slug(emoji):
+    """File slug of the real photo for an illustration ("" if none)."""
+    return PHOTO_FOR.get(emoji, ("", ""))[0]
