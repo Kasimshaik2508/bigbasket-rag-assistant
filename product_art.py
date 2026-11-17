@@ -191,3 +191,30 @@ PHOTO_FOR = {
 def photo_slug(emoji):
     """File slug of the real photo for an illustration ("" if none)."""
     return PHOTO_FOR.get(emoji, ("", ""))[0]
+
+
+# Hand-picked free Pexels photos, one per product type, linked straight from
+# Pexels's image server (allowed by the Pexels licence; no key or download).
+# slug -> Pexels photo id. Covers the types behind ~90% of the catalogue;
+# any type missing here keeps its illustration.
+PEXELS_IDS = {
+    "lotion": 15569178, "perfume": 1653085, "tableware": 8251873,
+    "spices": 678414, "containers": 6654122, "supplements": 15897784,
+    "soap": 16244099, "snacks": 479628, "cleaning": 4440527,
+    "chocolate": 4791265, "dry-fruits": 15613811, "tea": 6064656,
+    "sauce": 9475288, "biscuits": 266706, "cereal": 12449963,
+    "rice": 1311771, "milk": 6341410, "cooking-oil": 3737651,
+    "noodles": 30506288, "vegetables": 1400172, "cookware": 28726706,
+    "juice": 158053, "dal": 8108209, "coffee": 6612674,
+    "cake": 2147834, "cheese": 793129, "baby": 374756,
+    "fruits": 4451841, "bread": 4268507, "honey": 5634210,
+}
+
+
+def pexels_url(slug, width=400):
+    """Direct image URL for a slug's Pexels photo, or "" if we have none."""
+    pid = PEXELS_IDS.get(slug)
+    if not pid:
+        return ""
+    return (f"https://images.pexels.com/photos/{pid}/pexels-photo-{pid}.jpeg"
+            f"?auto=compress&cs=tinysrgb&w={width}")

@@ -17,7 +17,7 @@ from collections import Counter
 import streamlit as st
 
 from image_lookup import lookup_many
-from product_art import parse_header, photo_slug, pick_art
+from product_art import parse_header, photo_slug, pexels_url, pick_art
 
 from rag import FALLBACK_MSG, GUARDRAIL_MSG, RAGPipeline, SIM_THRESHOLD, TOP_K
 
@@ -114,6 +114,10 @@ header[data-testid="stHeader"] {{ background: transparent; }}
 .pcard .img.photo img {{ position: absolute; inset: 8px; width: calc(100% - 16px); height: calc(100% - 16px);
                         object-fit: contain; }}
 .pcard .img.photo.stock img {{ inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: 10px; }}
+.pcard .img.stock {{ overflow: hidden; }}
+.pcard .img.stock .ph {{ position: absolute; inset: 0; background-size: cover; background-position: center;
+                         border-radius: 10px; }}
+.pcard .img.stock .credit {{ z-index: 1; }}
 .pcard .img .credit {{ position: absolute; bottom: 4px; right: 6px; font-size: .58rem; color: #8A9385;
                       background: rgba(255,255,255,.85); padding: 0 4px; border-radius: 4px; }}
 .pcard .badge {{ z-index: 2;  position: absolute; top: 0; left: 0; background: {BADGE_BG}; color: {BADGE_TEXT};
@@ -334,7 +338,7 @@ def stock_photo_url(emoji):
     slug = photo_slug(emoji)
     if slug and os.path.exists(os.path.join(_PHOTO_DIR, f"{slug}.jpg")):
         return f"app/static/photos/{slug}.jpg"
-    return ""
+    return pexels_url(slug)  # hotlinked from Pexels, "" if none picked
 
 
 def picture_html(m, emoji, tint, label, badge, photo):
@@ -349,7 +353,11 @@ def picture_html(m, emoji, tint, label, badge, photo):
                 f'<span class="credit">Photo: Open Food Facts</span>')
     stock = stock_photo_url(emoji)
     if stock:
-        return (f'<div class="img photo stock">{badge}<img src="{stock}" alt="{label}" loading="lazy">'
+        # The photo is a background layer on top of the illustration: if the
+        # photo fails to load, the layer is just transparent and the emoji
+        # tile underneath still shows. No broken-image icon, no JavaScript.
+        return (f'<div class="img stock" style="background:{tint}" role="img" aria-label="{label}">'
+                f'{badge}{emoji}<span class="ph" style="background-image:url(\'{html.escape(stock)}\')"></span>'
                 f'<span class="credit">Photo: Pexels</span>')
     return f'<div class="img" style="background:{tint}" role="img" aria-label="{label}">{badge}{emoji}'
 
